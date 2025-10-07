@@ -448,13 +448,13 @@ class VSSPricerCOS:
         call_prices_all = all_strikes_flat * discount_factor * np.real(strike_bias @ Ck_call)
         put_prices_all = all_strikes_flat * discount_factor * np.real(strike_bias @ Ck_put)
         
-        # 创建映射字典，将行权价映射到对应的价格
-        price_map_call = dict(zip(all_strikes_flat, call_prices_all))
-        price_map_put = dict(zip(all_strikes_flat, put_prices_all))
-        
-        # 获取指定行权价的价格
-        call_prices = np.array([price_map_call[k] for k in strike['call']])
-        put_prices = np.array([price_map_put[k] for k in strike['put']])
+        mask_call = np.isin(all_strikes_flat, strike['call'])
+        indices = np.where(mask_call)[0]
+        call_prices = call_prices_all[indices]
+
+        mask_put = np.isin(all_strikes_flat, strike['put'])
+        indices = np.where(mask_put)[0]
+        put_prices = put_prices_all[indices]
         
         return {'call': call_prices, 'put': put_prices}
 
@@ -462,7 +462,7 @@ class VSSPricerCOS:
 if __name__ == "__main__":
     # 参数设置
     param = VSSParam(
-        kappa=8.9e-5,      # Mean reversion speed
+        kappa=-8.9e-5,      # Mean reversion speed
         nu=0.176,         # Volatility of volatility
         rho=-0.704,       # Correlation between Brownian motions
         theta= -0.044,     # Long-term variance
