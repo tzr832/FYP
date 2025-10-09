@@ -5,6 +5,10 @@ from scipy.special import gamma, hyp2f1
 import scipy.linalg as la
 from cmath import polar
 
+DEBUG = True
+if DEBUG:
+    import matplotlib.pyplot as plt
+
 @dataclass
 class VSSParam:
     """
@@ -25,11 +29,12 @@ class VSSPricerCOS:
     """
     Volterra Stein-Stein model option pricer using the COS method.
     """
-    def __init__(self, params: VSSParam):
+    def __init__(self, params: VSSParam, n: int = 252):
         self.params = params
         self.KK = None
         self.SIG = None
         self.g = None
+        self.n = n
     
     def set_params(self, param: VSSParam):
         self.params = param
@@ -41,14 +46,12 @@ class VSSPricerCOS:
         else:
             return self.params
     
-    def _rss_g_K_SIG_det(self, n, T):
+    def _rss_g_K_SIG_det(self, T):
         """
         Computes the kernel matrix, covariance matrix, and adjusted input vector for the
         generalized Volterra Stein-Stein (Rough Stein-Stein) model.
 
         Parameters:
-        - n: int
-            Number of discretization steps.
         - T: float
             Maturity time.
         - nu: float
@@ -60,7 +63,7 @@ class VSSPricerCOS:
         - H: float
             Hurst index.
 
-        Returns:
+        Update values as follow:
         - g: numpy array of shape (n, 1)
             Vector of adjusted values based on the input curve for each time step.
         - self.KK: numpy array of shape (n, n)
@@ -71,16 +74,16 @@ class VSSPricerCOS:
         alpha = self.params.H + 0.5
 
         # Time discretization from 0 to T
-        t = np.linspace(0, T, n + 1)
+        t = np.linspace(0, T, self.n + 1)
 
         # Define indices for 2D matrices
-        tj_1 = np.tile(t[:-1], n).reshape(n, n)  # Times tj excluding the final point
+        tj_1 = np.tile(t[:-1], self.n).reshape(self.n, self.n)  # Times tj excluding the final point
         ti_1 = tj_1.T  # Transpose to create a grid of ti values
-        tj = np.tile(t[1:], n).reshape(n, n)  # Times tj excluding the initial point
+        tj = np.tile(t[1:], self.n).reshape(self.n, self.n)  # Times tj excluding the initial point
 
         # Initialize kernel matrix self.KK
-        self.KK = np.zeros((n, n))
-        # K^n_{ij}= \bm 1_{j\leq i-1}\int_{t_{j-1}}^{t_j} K(t_{i-1},s)ds  , \quad 1 \leq  i,j\leq n, 
+        self.KK = np.zeros((self.n, self.n))
+        # K^n_{ij}= \bm 1_{j\leq i-1}\int_{t_{j-1}}^{t_j} K(t_{i-1},s)ds  , \quad 1 \leq  i,j\leq n,
         self.KK[tj <= ti_1] = ((ti_1 - tj_1) ** alpha - (ti_1 - tj) ** alpha)[tj <= ti_1] / gamma(1 + alpha)
         self.KK_sum = self.KK + self.KK.T
         self.KK_mul = self.KK @ self.KK.T
@@ -98,72 +101,52 @@ class VSSPricerCOS:
         # Compute adjusted vector g based on initial conditions
         self.g = (self.params.X_0 + self.params.theta * t[:-1] ** alpha / gamma(1 + alpha)).reshape(-1, 1)
     
-    def _rss_discontinuous_eval(self, u, w, r, n, T, moneyness) -> tuple[complex, complex]:
+    def _rss_cf(self, u, w, r, T, moneyness) -> tuple[complex, complex]:
         """
-        Evaluates the Fourier-Laplace transform and Fredholm determinant
-        for a single pair (u, w) using the discontinuous formula.
+        Computes the discontinuous Fourier-Laplace transform for arrays of complex parameters
+        u and w using the fBM kernal.
         """
-        
+        if self.g is None or self.KK is None or self.SIG is None:
+            self._rss_g_K_SIG_det(T)
+        elif self.g.size != self.n:
+            self._rss_g_K_SIG_det(T)
+
         a = w + 0.5 * (u**2 - u)
         b = self.params.kappa + self.params.rho * self.params.nu * u
 
         # Compute tilde(self.SIG) = inv(I - b * K) * self.SIG * inv(I - b * K).T
-        X = np.eye(n) - b * self.KK
-        self.SIG_tilde = la.solve(X, la.solve(X, self.SIG.T).T)
+        X = np.eye(self.n) - b[:,np.newaxis,np.newaxis] * self.KK[np.newaxis,:,:]
+        Sigma_Xinv = np.swapaxes(la.solve(X, self.SIG.T), 1 ,2)
+        SIG_tilde = la.solve(X, Sigma_Xinv)
 
         # Compute the determinant involved in the characteristic function
-        D = np.eye(n) - 2 * a * T / n * self.SIG_tilde
+        D = np.eye(self.n) - 2 * a[:, np.newaxis, np.newaxis] * T / self.n * SIG_tilde
         det_val = la.det(D)
 
         # Compute matrix Psi
-        denom = np.eye(n) - b * self.KK_sum + b**2*(self.KK_mul) - 2 * a * T / n * self.SIG
-        Psi = a * la.solve(denom, np.eye(n))
+        denom = np.eye(self.n) - b[:,np.newaxis,np.newaxis] * self.KK_sum[np.newaxis,:,:] \
+              + b[:,np.newaxis,np.newaxis]**2 * (self.KK_mul[np.newaxis,:,:]) \
+              - 2 * a[:,np.newaxis,np.newaxis] * T / self.n * self.SIG[np.newaxis,:,:]
+        Psi = a[:, np.newaxis, np.newaxis] * la.solve(denom, np.eye(self.n))
 
         # Quadratic form in g: g.T @ Psi @ g
-        quad_form = (self.g.T @ Psi @ self.g)[0, 0] * T / n
+        quad_form = np.einsum('j,ijk,k -> i', self.g.flatten(), Psi, self.g.flatten()) * T / self.n
 
-        # Final Fourier-Laplace value
-        value = np.exp(u * (np.log(moneyness) + r * T) + quad_form) / np.sqrt(det_val)
-
-        return value, det_val
-
-    def _discontinuous_cf_det(self, n, u_array, w_array, r, T, moneyness) -> tuple[np.ndarray[complex], np.ndarray[complex]]:
-        """
-        Computes the discontinuous Fourier-Laplace transform for arrays of complex parameters
-        u and w using the exponential decay kernel.
-        """
-        values = []
-        dets = []
-        for u, w in zip(u_array, w_array):
-            val, det_val = self._rss_discontinuous_eval(u, w, r, n, T, moneyness)
-            values.append(val)
-            dets.append(det_val)
-        return np.array(values, dtype=complex), np.array(dets, dtype=complex)
-    
-    def _rss_cf(self, n, u_array, w_array, r, T, moneyness) -> tuple[np.ndarray[complex], np.ndarray[complex]]:
-        """
-        Computes the Fourier-Laplace transform of the log price and integrated variance and the Fredholm determinant
-        of tilde(Σ_0) based on the Volterra Stein-Stein model with exponential kernel for arrays of complex parameters 
-        u and w, using the determinant formula combined with the Lipschitz-based algorithm.
-        """
-        # Compute the discontinuous characteristic function
-        if self.g is None or self.KK is None or self.SIG is None:
-            self._rss_g_K_SIG_det(n, T)
-        fourier_laplace_values, det_values = self._discontinuous_cf_det(n, u_array, w_array, r, T, moneyness)
+        values = np.exp(u * (np.log(moneyness) + r * T) + quad_form) / np.sqrt(det_val)
 
         # Apply the rotation count algorithm in its naive version
-        pc=np.array([polar(i) for i in det_values])
+        pc=np.array([polar(i) for i in det_val])
         arg = pc[:,1]
         bad_ind = np.where(np.abs(arg[1:]-arg[:-1])>5)[0]
         for i in bad_ind.tolist():
-            fourier_laplace_values[i+1:] = - fourier_laplace_values[i+1:]
-        
-        # Ensure the phi(0,0) has a positive real part
-        max_abs_idx = np.argmax(np.abs(fourier_laplace_values))
-        if np.abs(fourier_laplace_values[max_abs_idx]) < 0:
-            fourier_laplace_values = -fourier_laplace_values
+            values[i+1:] = - values[i+1:]
 
-        return fourier_laplace_values
+        # Ensure the phi(0,0) has a positive real part
+        max_abs_idx = np.argmax(np.abs(values))
+        if np.abs(values[max_abs_idx]) < 0:
+            values = -values
+
+        return values
     
     def _chi(self, c, d, a, b, k):
         """
@@ -258,7 +241,7 @@ class VSSPricerCOS:
         # 计算均值和方差
         u = np.array([-2*h, -h, 0, h, 2*h]) * 1j
         w = np.zeros_like(u)
-        cf_values = self._rss_cf(252, u, w, r, tau, 1.0)
+        cf_values = self._rss_cf(u, w, r, tau, 1.0)
 
         # 使用更稳定的数值微分方法计算矩
         c1 = np.real((cf_values[3] - cf_values[1]) / (4j*h))
@@ -312,11 +295,10 @@ class VSSPricerCOS:
         # 使用Volterra Stein-Stein特征函数计算phi_levy
         # 这里使用moneyness=1.0来计算特征函数
         moneyness = 1.0
-        n = 252  # 离散化步数，一年252个交易日
         u_array = omega * 1j
         w_array = np.zeros_like(omega, dtype=complex)  # 对于对数价格特征函数，w=0
-        
-        phi_levy = self._rss_cf(n, u_array, w_array, r, tau, moneyness)
+
+        phi_levy = self._rss_cf(u_array, w_array, r, tau, moneyness)
         phi_levy[0] *= 0.5  # 零频率项需要特殊缩放
         
         # 看涨期权的Uk系数
@@ -363,11 +345,10 @@ class VSSPricerCOS:
         # 使用Volterra Stein-Stein特征函数计算phi_levy
         # 这里使用moneyness=1.0来计算特征函数
         moneyness = 1.0
-        n = 252  # 离散化步数，一年252个交易日
         u_array = omega * 1j
         w_array = np.zeros_like(omega, dtype=complex)  # 对于对数价格特征函数，w=0
-        
-        phi_levy = self._rss_cf(n, u_array, w_array, r, tau, moneyness)
+
+        phi_levy = self._rss_cf(u_array, w_array, r, tau, moneyness)
         phi_levy[0] *= 0.5  # 零频率项需要特殊缩放
         
         # 看跌期权的Uk系数（与看涨期权不同）
@@ -423,11 +404,10 @@ class VSSPricerCOS:
         
         # 使用Volterra Stein-Stein特征函数计算phi_levy
         moneyness = 1.0
-        n = 252  # 离散化步数，一年252个交易日
         u_array = omega * 1j
         w_array = np.zeros_like(omega, dtype=complex)  # 对于对数价格特征函数，w=0
-        
-        phi_levy = self._rss_cf(n, u_array, w_array, r, tau, moneyness)
+
+        phi_levy = self._rss_cf(u_array, w_array, r, tau, moneyness)
         phi_levy[0] *= 0.5  # 零频率项需要特殊缩放
         
         # 计算call和put的Uk系数
@@ -462,7 +442,7 @@ class VSSPricerCOS:
 if __name__ == "__main__":
     # 参数设置
     param = VSSParam(
-        kappa=-8.9e-5,      # Mean reversion speed
+        kappa=8.9e-5,      # Mean reversion speed
         nu=0.176,         # Volatility of volatility
         rho=-0.704,       # Correlation between Brownian motions
         theta= -0.044,     # Long-term variance
@@ -476,6 +456,15 @@ if __name__ == "__main__":
     q = 0.0
     tau = 1.0
 
+    # u = np.linspace(0, 100, 256) * 1j
+
+    # pricer._rss_g_K_SIG_det(tau)
+    # value = pricer._rss_cf(u, np.zeros_like(u), r, tau, 1)
+    # plt.plot(u.imag, value.real, label='real')
+    # plt.plot(u.imag, value.imag, label='imag')
+    # plt.legend()
+    # plt.show()
+    import time
     # 测试多个行权价
     K_array = np.linspace(80, 120, 9)  # 行权价从80到120，共9个点
     
@@ -486,16 +475,27 @@ if __name__ == "__main__":
     
     # 测试price方法
     strike_dict = {'call': K_array, 'put': K_array}
+    start = time.time()
     prices = pricer.price(S0, strike_dict, r, q, tau)
-    put_by_parity = prices['call'] + K_array * np.exp(-r * tau) - S0  # 通过看涨-看跌平价计算看跌价格
-    call_by_parity = prices['put'] + S0 - K_array * np.exp(-r * tau)  # 通过看跌-看涨平价计算看涨价格
+    print(f"定价用时(n = 252): {time.time() - start}")
     parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
-    # parity = prices['call'] + K_array - prices['put'] - S0
-
-
-    print("行权价\t看涨期权价格\t看跌期权价格\t看涨平价\t看跌平价\t平价误差")
+    print(f"n = 252")
+    print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
     for i, k in enumerate(K_array):
-        print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{call_by_parity[i]:.6f}\t{put_by_parity[i]:.6f}\t{parity[i]:.6e}")
+        print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
+
+
+    pricer.n = 63
+    start = time.time()
+    prices = pricer.price(S0, strike_dict, r, q, tau)
+    print(f"定价用时(n = 63): {time.time() - start}")
+    parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
+    print(f"n = 63")
+    print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
+    for i, k in enumerate(K_array):
+        print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
+
+    
     
     # # # 验证看涨-看跌平价
     # parity_check = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
