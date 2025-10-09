@@ -7,6 +7,7 @@ from cmath import polar
 
 DEBUG = True
 if DEBUG:
+    import time
     import matplotlib.pyplot as plt
 
 @dataclass
@@ -99,7 +100,7 @@ class VSSPricerCOS:
         self.SIG[self.SIG == np.inf] = 0  # Handle any infinite values due to division by zero
 
         # Compute adjusted vector g based on initial conditions
-        self.g = (self.params.X_0 + self.params.theta * t[:-1] ** alpha / gamma(1 + alpha)).reshape(-1, 1)
+        self.g = (self.params.X_0 + self.params.theta * t[:-1] ** alpha / gamma(1 + alpha))
     
     def _rss_cf(self, u, w, r, T, moneyness) -> tuple[complex, complex]:
         """
@@ -130,19 +131,18 @@ class VSSPricerCOS:
         Psi = a[:, np.newaxis, np.newaxis] * la.solve(denom, np.eye(self.n))
 
         # Quadratic form in g: g.T @ Psi @ g
-        quad_form = np.einsum('j,ijk,k -> i', self.g.flatten(), Psi, self.g.flatten()) * T / self.n
+        quad_form = np.einsum('j,ijk,k -> i', self.g, Psi, self.g) * T / self.n
 
         values = np.exp(u * (np.log(moneyness) + r * T) + quad_form) / np.sqrt(det_val)
 
         # Apply the rotation count algorithm in its naive version
-        pc=np.array([polar(i) for i in det_val])
-        arg = pc[:,1]
+        arg=np.angle(det_val)
         bad_ind = np.where(np.abs(arg[1:]-arg[:-1])>5)[0]
         for i in bad_ind.tolist():
             values[i+1:] = - values[i+1:]
 
         # Ensure the phi(0,0) has a positive real part
-        max_abs_idx = np.argmax(np.abs(values))
+        max_abs_idx = 0 if u[0] == 0 else np.argmax(np.abs(values))
         if np.abs(values[max_abs_idx]) < 0:
             values = -values
 
@@ -248,15 +248,6 @@ class VSSPricerCOS:
         
         # 二阶矩：使用中心差分公式
         c2 = -np.real((cf_values[1] - 2*cf_values[2] + cf_values[3]) / (h**2))
-        
-        # # 四阶矩：使用更稳定的计算方法
-        # d2CF_h = -np.real((cf_values[4] - 2*cf_values[3] + cf_values[2]) / (h**2))
-        # d2CF_negh = -np.real((cf_values[2] - 2*cf_values[1] + cf_values[0]) / (h**2))
-
-        # d3CF_0 = (d2CF_h - c2) / h
-        # d3CF_negh = (c2 - d2CF_negh) / h
-
-        # c4 = (d3CF_0 - d3CF_negh) / h
         
         a = c1 - L * np.sqrt(c2)
         b = c1 + L * np.sqrt(c2)
@@ -455,18 +446,17 @@ if __name__ == "__main__":
     r = 0.03
     q = 0.0
     tau = 1.0
+    # 测试多个行权价
+    K_array = np.linspace(80, 120, 9)  # 行权价从80到120，共9个点
 
     # u = np.linspace(0, 100, 256) * 1j
-
     # pricer._rss_g_K_SIG_det(tau)
     # value = pricer._rss_cf(u, np.zeros_like(u), r, tau, 1)
     # plt.plot(u.imag, value.real, label='real')
     # plt.plot(u.imag, value.imag, label='imag')
     # plt.legend()
     # plt.show()
-    import time
-    # 测试多个行权价
-    K_array = np.linspace(80, 120, 9)  # 行权价从80到120，共9个点
+
     
     print(f"\nVolterra Stein-Stein模型COS定价测试:")
     print(f"参数: kappa={param.kappa}, nu={param.nu}, rho={param.rho}, theta={param.theta}, X_0={param.X_0}, H={param.H}")
@@ -476,29 +466,41 @@ if __name__ == "__main__":
     # 测试price方法
     strike_dict = {'call': K_array, 'put': K_array}
     start = time.time()
-    prices = pricer.price(S0, strike_dict, r, q, tau)
-    print(f"定价用时(n = 252): {time.time() - start}")
-    parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
+    if DEBUG:
+        prices = pricer.price(S0, strike_dict, r, q, tau)
+        print(f"定价用时(n = {pricer.n}): {time.time() - start}")
+        parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
+    else:
+        prices = pricer.price(S0, strike_dict, r, q, tau)
     print(f"n = 252")
     print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
     for i, k in enumerate(K_array):
         print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
 
+    pricer.n = 126
+    if DEBUG:
+        prices = pricer.price(S0, strike_dict, r, q, tau)
+        print(f"定价用时(n = {pricer.n}): {time.time() - start}")
+        parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
+    else:
+        prices = pricer.price(S0, strike_dict, r, q, tau)
+    parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
+    print(f"n = 126")
+    print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
+    for i, k in enumerate(K_array):
+        print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
 
     pricer.n = 63
-    start = time.time()
-    prices = pricer.price(S0, strike_dict, r, q, tau)
-    print(f"定价用时(n = 63): {time.time() - start}")
+    if DEBUG:
+        prices = pricer.price(S0, strike_dict, r, q, tau)
+        print(f"定价用时(n = {pricer.n}): {time.time() - start}")
+        parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
+    else:
+        prices = pricer.price(S0, strike_dict, r, q, tau)
     parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
     print(f"n = 63")
     print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
     for i, k in enumerate(K_array):
         print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
-
-    
-    
-    # # # 验证看涨-看跌平价
-    # parity_check = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
-    # print(f"\n看涨-看跌平价验证: {np.abs(parity_check)}")
     
     print(f"\n=== Volterra Stein-Stein COS定价器测试完成 ===")
