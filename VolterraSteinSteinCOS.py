@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Union
 from scipy.special import gamma, hyp2f1
 import scipy.linalg as la
-from cmath import polar
 
 DEBUG = True
 if DEBUG:
@@ -15,16 +14,18 @@ class VSSParam:
     """
     Heston模型参数数据类
     """
-    kappa: float  # Mean reversion speed
-    nu: float     # Volatility of volatility
-    rho: float    # Correlation between Brownian motions
-    theta: float  # Long-term variance
-    X_0: float    # Initial variance
-    H: float      # Hurst index for Rough Stein-Stein model
+    kappa: float = 8.9e-5  # Mean reversion speed
+    nu: float = 0.176     # Volatility of volatility
+    rho: float = -0.704  # Correlation between Brownian motions
+    theta: float = -0.044  # Long-term variance
+    X_0: float = 0.113    # Initial variance
+    H: float = 0.279      # Hurst index for Rough Stein-Stein model
 
     def __post_init__(self):
         if not (0 < self.H < 1):
             raise ValueError("Hurst index H must be in the interval (0, 1).")
+        if not (-1 < self.rho < 1):
+            raise ValueError("rho must be in the interval (-1, 1).")
 
 class VSSPricerCOS:
     """
@@ -465,40 +466,30 @@ if __name__ == "__main__":
     
     # 测试price方法
     strike_dict = {'call': K_array, 'put': K_array}
-    start = time.time()
-    if DEBUG:
-        prices = pricer.price(S0, strike_dict, r, q, tau)
-        print(f"定价用时(n = {pricer.n}): {time.time() - start}")
-        parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
-    else:
-        prices = pricer.price(S0, strike_dict, r, q, tau)
-    print(f"n = 252")
-    print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
-    for i, k in enumerate(K_array):
-        print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
-
-    pricer.n = 126
-    if DEBUG:
-        prices = pricer.price(S0, strike_dict, r, q, tau)
-        print(f"定价用时(n = {pricer.n}): {time.time() - start}")
-        parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
-    else:
-        prices = pricer.price(S0, strike_dict, r, q, tau)
-    parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
-    print(f"n = 126")
-    print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
-    for i, k in enumerate(K_array):
-        print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
 
     pricer.n = 63
     if DEBUG:
+        start = time.time()
         prices = pricer.price(S0, strike_dict, r, q, tau)
-        print(f"定价用时(n = {pricer.n}): {time.time() - start}")
-        parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
+        print(f"定价用时(n = {pricer.n}): {time.time() - start}")  
     else:
         prices = pricer.price(S0, strike_dict, r, q, tau)
     parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
-    print(f"n = 63")
+    print(f"tau = 1")
+    print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
+    for i, k in enumerate(K_array):
+        print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
+
+    pricer.n *= 2
+    tau *= 2
+    if DEBUG:
+        start = time.time()
+        prices = pricer.price(S0, strike_dict, r, q, tau)
+        print(f"定价用时(n = {pricer.n}): {time.time() - start}")  
+    else:
+        prices = pricer.price(S0, strike_dict, r, q, tau)
+    parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
+    print(f"tau = 2")
     print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
     for i, k in enumerate(K_array):
         print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
