@@ -7,8 +7,7 @@ def get_tau_in_year(start: datetime, end: datetime):
     calendar = exchange_calendars.get_calendar("XHKG")
     days_in_2025 = len(calendar.schedule.loc[start:"2026-01-01"])
     if end.year == 2025:
-        
-        return days_in_2025 / 252
+        return len(calendar.schedule.loc[start:end]) / 252
     else:
         months = (end.year - 2026) * 12 + end.month 
         tau = days_in_2025 / 252 + months / 12
@@ -19,7 +18,7 @@ if __name__ == "__main__":
     rawData = pd.read_csv('Data/20250901.csv')
     
     count = 0
-    optiondict = {'HSI': 25617.42, 'num': None}
+    optiondict = {'HSI': 25617.42, 'num': None, 'rf': .03}
     
     for i, row in rawData.iterrows():
         if not row['series'].startswith("HSI"):
@@ -47,9 +46,9 @@ if __name__ == "__main__":
         optiondict[maturity]['strike'][optionType].append(strike)
         optiondict[maturity]['price'][optionType].append(row['settle'])
         optiondict[maturity]['IV'][optionType].append(row['IV'])
-        optiondict[maturity]['rf'] = 0.03
+        
         if optiondict[maturity]['tau'] == None:
-            optiondict[maturity]['tau'] = get_tau_in_year(datetime(2025, 9, 1), datetime(year, month, 1))
+            optiondict[maturity]['tau'] = get_tau_in_year(datetime(2025, 9, 1), datetime(year, month, 29))
         count += 1
     optiondict['num'] = count
     print(f"{count} HSI option is found!")

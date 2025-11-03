@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 plt.rcParams['font.family'] = 'SimHei'
 
-DEBUG = True
+DEBUG = False
 
 @dataclass
 class BSParam:
@@ -60,10 +60,10 @@ class BSPricerCOS:
         
         # 特征函数公式: φ(u) = exp(iu ln(S0/K) + iu(mu - sigma²/2)tau - (u² sigma² tau)/2)
         mu = r - 0.5 * sigma**2
-        log_term = x + mu * tau  
+        log_term = x + mu  
         
         # 广播计算特征函数矩阵
-        result = np.exp(1j * u * log_term - 0.5 * (u**2) * (sigma**2) * tau)
+        result = np.exp((1j * u * log_term - 0.5 * (u**2) * (sigma**2)) * tau)
 
         if DEBUG:
             print(f"GBM CF computed for u with shape {u.shape}, result shape: {result.shape}")

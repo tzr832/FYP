@@ -3,6 +3,9 @@ from dataclasses import dataclass
 from typing import Union
 from scipy.special import gamma, hyp2f1
 import scipy.linalg as la
+import numdifftools as nd
+import warnings
+warnings.filterwarnings('ignore')
 
 DEBUG = True
 if DEBUG:
@@ -14,7 +17,7 @@ class VSSParam:
     """
     Heston模型参数数据类
     """
-    kappa: float = 8.9e-5  # Mean reversion speed
+    kappa: float = -8.9e-5  # Mean reversion speed
     nu: float = 0.176     # Volatility of volatility
     rho: float = -0.704  # Correlation between Brownian motions
     theta: float = -0.044  # Long-term variance
@@ -103,7 +106,7 @@ class VSSPricerCOS:
         # Compute adjusted vector g based on initial conditions
         self.g = (self.params.X_0 + self.params.theta * t[:-1] ** alpha / gamma(1 + alpha))
     
-    def _rss_cf(self, u, w, r, T, moneyness) -> tuple[complex, complex]:
+    def _rss_cf(self, u, w, r, T, moneyness) -> np.ndarray:
         """
         Computes the discontinuous Fourier-Laplace transform for arrays of complex parameters
         u and w using the fBM kernal.
@@ -113,10 +116,13 @@ class VSSPricerCOS:
         elif self.g.size != self.n:
             self._rss_g_K_SIG_det(T)
 
+        if u.ndim > 1:
+            u = u.flatten()
+        
         a = w + 0.5 * (u**2 - u)
         b = self.params.kappa + self.params.rho * self.params.nu * u
 
-        # Compute tilde(self.SIG) = inv(I - b * K) * self.SIG * inv(I - b * K).T
+        # Compute tilde(SIG) = inv(I - b * K) * SIG * inv(I - b * K).T
         X = np.eye(self.n) - b[:,np.newaxis,np.newaxis] * self.KK[np.newaxis,:,:]
         Sigma_Xinv = np.swapaxes(la.solve(X, self.SIG.T), 1 ,2)
         SIG_tilde = la.solve(X, Sigma_Xinv)
@@ -227,7 +233,7 @@ class VSSPricerCOS:
         
         return result
     
-    def _cal_integral_bounds(self, L: float, r:float , tau: float, h: float = 1e-4) -> tuple[float, float]:
+    def _cal_integral_bounds(self, L: float, r:float , tau: float, h: float = 1e-6) -> tuple[float, float]:
         """
         计算积分区间 [a, b] 的上下限
         
@@ -239,24 +245,30 @@ class VSSPricerCOS:
         返回:
         a, b: 积分区间端点
         """
-        # 计算均值和方差
-        u = np.array([-2*h, -h, 0, h, 2*h]) * 1j
-        w = np.zeros_like(u)
-        cf_values = self._rss_cf(u, w, r, tau, 1.0)
 
         # 使用更稳定的数值微分方法计算矩
-        c1 = np.real((cf_values[3] - cf_values[1]) / (4j*h))
+        func_df1 = lambda x: -self._rss_cf(np.array([x])*1j, np.zeros(1), r, tau, 1.0).imag
+        func_df2 = lambda x: -self._rss_cf(np.array([x])*1j, np.zeros(1), r, tau, 1.0).real
+        func_df3 = lambda x:  self._rss_cf(np.array([x])*1j, np.zeros(1), r, tau, 1.0).imag
+        func_df4 = lambda x:  self._rss_cf(np.array([x])*1j, np.zeros(1), r, tau, 1.0).real
+
+
+        mu1 = nd.Derivative(func_df1, n=1)(0)
+        mu2 = nd.Derivative(func_df2, n=2)(0)
+        mu3 = nd.Derivative(func_df3, n=3)(0)
+        mu4 = nd.Derivative(func_df4, n=4)(0)
+
+        c1 = mu1
+        c2 = mu2 - mu1**2
+        c4 = mu4 - 4*mu3*mu1 - 3*mu2**2 + 12*mu2*mu1**2 - 6*mu1**4
         
-        # 二阶矩：使用中心差分公式
-        c2 = -np.real((cf_values[1] - 2*cf_values[2] + cf_values[3]) / (h**2))
-        
-        a = c1 - L * np.sqrt(c2)
-        b = c1 + L * np.sqrt(c2)
+        a = c1 - L * np.sqrt(c2 + np.sqrt(c4))
+        b = c1 + L * np.sqrt(c2 + np.sqrt(c4))    
         
         return a, b
 
     def call(self, S: float, K: Union[float, np.ndarray], r: float, tau: float,
-                   N: int = 256, L: int = 20) -> np.ndarray:
+                   N: int = 256, L: int = 10) -> np.ndarray:
         """
         使用优化COS方法计算Volterra Stein-Stein模型下的欧式看涨期权价格（多个行权价）
         
@@ -307,7 +319,7 @@ class VSSPricerCOS:
         return call.reshape(original_shape)
 
     def put(self, S: float, K: Union[float, np.ndarray], r: float, tau: float,
-                  N: int = 256, L: int = 20) -> np.ndarray:
+                  N: int = 256, L: int = 10) -> np.ndarray:
         """
         使用优化COS方法计算Volterra Stein-Stein模型下的欧式看跌期权价格（多个行权价）
         
@@ -363,7 +375,7 @@ class VSSPricerCOS:
           q: float,
           tau: float,
           N: int = 256,
-          L: int = 20) -> dict[str, np.ndarray | list]:
+          L: int = 10) -> dict[str, np.ndarray | list]:
         """
         计算指定行权价看涨和看跌期权价格
         优化版本：计算call和put行权价并集的cf，再分别算出call和put的Uk和strike_bias
@@ -443,20 +455,27 @@ if __name__ == "__main__":
     )
     pricer = VSSPricerCOS(param)
     
-    S0 = 100.0
+    S0 = 25617.42
     r = 0.03
     q = 0.0
-    tau = 1.0
+    tau = 5.0
     # 测试多个行权价
-    K_array = np.linspace(80, 120, 9)  # 行权价从80到120，共9个点
+    K_array = np.array([
+        13600, 13700, 13800, 13900, 14000, 14100, 14200, 14300, 14400, 14500,
+        14600, 14700, 14800, 14900, 15000, 15100, 15200, 15300, 15400, 15500,
+        15600, 15700, 15800, 15900, 16000, 16100, 16200, 16300, 16400, 16500,
+        16600, 16700, 16800, 16900, 17000, 17100, 17200, 17300, 17400, 17500,
+        17600, 17700, 17800, 17900, 18000, 18100, 18200, 18300, 18400, 18500,
+        18600, 18700, 18800, 18900, 19000, 19100, 19200, 19300, 19400, 19500,
+        19600, 19700, 19800, 19900, 20000, 20200, 20400, 20600, 20800, 21000,
+        21200, 21400, 21600, 21800, 22000, 22200, 22400, 22600, 22800, 23000,
+        23200, 23400, 23600, 23800, 24000, 24200, 24400, 24600, 24800, 25000,
+        25200, 25400, 25600, 25800, 26000, 26200, 26400, 26600, 26800, 27000,
+        27200, 27400, 27600, 27800, 28000, 28200, 28400, 28600, 28800, 29000,
+        29200, 29400, 29600, 29800, 30000, 30200, 30400, 30600, 30800, 31000
+      ])  
 
-    # u = np.linspace(0, 100, 256) * 1j
-    # pricer._rss_g_K_SIG_det(tau)
-    # value = pricer._rss_cf(u, np.zeros_like(u), r, tau, 1)
-    # plt.plot(u.imag, value.real, label='real')
-    # plt.plot(u.imag, value.imag, label='imag')
-    # plt.legend()
-    # plt.show()
+
 
     
     print(f"\nVolterra Stein-Stein模型COS定价测试:")
@@ -467,31 +486,47 @@ if __name__ == "__main__":
     # 测试price方法
     strike_dict = {'call': K_array, 'put': K_array}
 
-    pricer.n = 63
+    pricer.n = 32
     if DEBUG:
         start = time.time()
-        prices = pricer.price(S0, strike_dict, r, q, tau)
+        prices_less = pricer.price(S0, strike_dict, r, q, tau)
         print(f"定价用时(n = {pricer.n}): {time.time() - start}")  
     else:
-        prices = pricer.price(S0, strike_dict, r, q, tau)
-    parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
+        prices_less = pricer.price(S0, strike_dict, r, q, tau)
+    parity = prices_less['call'] + K_array * np.exp(-r * tau) - prices_less['put'] - S0
     print(f"tau = 1")
     print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
-    for i, k in enumerate(K_array):
-        print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
+    for i, k in enumerate(K_array[::5]):
+        print(f"{k}\t{prices_less['call'][i]:.6f}\t{prices_less['put'][i]:.6f}\t{parity[i]:.6e}")
 
-    pricer.n *= 2
-    tau *= 2
+    pricer.n *= 5
+    # tau *= 2
     if DEBUG:
         start = time.time()
-        prices = pricer.price(S0, strike_dict, r, q, tau)
+        prices_more = pricer.price(S0, strike_dict, r, q, tau)
         print(f"定价用时(n = {pricer.n}): {time.time() - start}")  
     else:
-        prices = pricer.price(S0, strike_dict, r, q, tau)
-    parity = prices['call'] + K_array * np.exp(-r * tau) - prices['put'] - S0
-    print(f"tau = 2")
+        prices_more = pricer.price(S0, strike_dict, r, q, tau)
+    parity = prices_more['call'] + K_array * np.exp(-r * tau) - prices_more['put'] - S0
+    # print(f"tau = 2")
     print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
-    for i, k in enumerate(K_array):
-        print(f"{k}\t{prices['call'][i]:.6f}\t{prices['put'][i]:.6f}\t{parity[i]:.6e}")
+    for i, k in enumerate(K_array[::5]):
+        print(f"{k}\t{prices_more['call'][i]:.6f}\t{prices_more['put'][i]:.6f}\t{parity[i]:.6e}")
     
+    if DEBUG:
+        print("\n比较不同n值下的定价结果差异:")
+        fig, axs = plt.subplots(2, 1, figsize=(10, 8))
+        print(f"relative error: {np.max(np.abs((prices_less['call'] - prices_more['call']) / prices_more['call'])):.6e} (call),\
+               {np.max(np.abs((prices_less['put'] - prices_more['put']) / prices_more['put'])):.6e} (put)")
+
+        axs[0].plot(K_array, prices_less['call'], label='Call n less')
+        axs[0].plot(K_array, prices_more['call'], '--', label='Call n more')
+        axs[0].plot(K_array, prices_less['put'], label='Put n less')
+        axs[0].plot(K_array, prices_more['put'], '--', label='Put n more')
+        axs[0].legend()
+
+        axs[1].plot(K_array, np.abs((prices_less['call'] - prices_more['call'])), label='Call abs error')
+        axs[1].plot(K_array, np.abs((prices_less['put'] - prices_more['put'])), label='Put abs error')
+        axs[1].legend()
+        plt.show()
     print(f"\n=== Volterra Stein-Stein COS定价器测试完成 ===")

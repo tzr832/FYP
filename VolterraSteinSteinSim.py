@@ -38,6 +38,9 @@ class VolterraSteinSteinSimulator:
         if random_seed is not None:
             np.random.seed(random_seed)
     
+    def set_params(self, param: VSSParam):
+        self.params = param
+    
     @staticmethod
     def K_brownian(t: float, s: float) -> float:
         """
