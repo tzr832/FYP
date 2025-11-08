@@ -15,7 +15,7 @@ if DEBUG:
 @dataclass
 class VSSParam:
     """
-    Heston模型参数数据类
+    Heston model parameter data class
     """
     kappa: float = -8.9e-5  # Mean reversion speed
     nu: float = 0.176     # Volatility of volatility
@@ -51,7 +51,7 @@ class VSSPricerCOS:
         else:
             return self.params
     
-    def _rss_g_K_SIG_det(self, T):
+    def _compute_kernel_matrices(self, T):
         """
         Computes the kernel matrix, covariance matrix, and adjusted input vector for the
         generalized Volterra Stein-Stein (Rough Stein-Stein) model.
@@ -112,9 +112,9 @@ class VSSPricerCOS:
         u and w using the fBM kernal.
         """
         if self.g is None or self.KK is None or self.SIG is None:
-            self._rss_g_K_SIG_det(T)
+            self._compute_kernel_matrices(T)
         elif self.g.size != self.n:
-            self._rss_g_K_SIG_det(T)
+            self._compute_kernel_matrices(T)
 
         if u.ndim > 1:
             u = u.flatten()
@@ -157,27 +157,27 @@ class VSSPricerCOS:
     
     def _chi(self, c, d, a, b, k):
         """
-        优化版本的chi_k函数，计算函数 g(y) = e^y 在区间 [c,d] 上的余弦系数
+        chi_k function, computes the cosine coefficients for function g(y) = e^y on interval [c,d]
         
-        参数:
-        c, d: 积分区间端点
-        a, b: 整体积分区间端点
-        k: 余弦项的阶数
+        Parameters:
+        c, d: integration interval endpoints
+        a, b: overall integration interval endpoints
+        k: order of cosine term
         
-        返回:
-        χ_k(c,d) 的解析解
+        Returns:
+        χ_k(c,d) analytical solution
         """
         k = np.asarray(k)
 
-        # 标量情况
-        # 处理 k=0 的特殊情况
+        # Scalar case
+        # Handle special case for k=0
         mask_k0 = (k == 0)
         mask_k_nonzero = ~mask_k0
 
         result = np.zeros_like(k, dtype=float)
 
         if np.any(mask_k_nonzero):
-            # k ≠ 0 的情况
+            # k ≠ 0 case
             omega = k[mask_k_nonzero] * np.pi / (b - a)
             omega_sq = omega**2
 
@@ -193,34 +193,34 @@ class VSSPricerCOS:
                                         omega * sin_term_c * np.exp(c)) / denominator
 
         if np.any(mask_k0):
-            # k = 0 的情况
+            # k = 0 case
             result[mask_k0] = np.exp(d) - np.exp(c)
 
         return result
 
     def _psi(self, c, d, a, b, k):
         """
-        优化版本的psi_k函数，计算函数 g(y) = 1 在区间 [c,d] 上的余弦系数
+        psi_k function, computes the cosine coefficients for function g(y) = 1 on interval [c,d]
         
-        参数:
-        c, d: 积分区间端点
-        a, b: 整体积分区间端点
-        k: 余弦项的阶数
+        Parameters:
+        c, d: integration interval endpoints
+        a, b: overall integration interval endpoints
+        k: order of cosine term
         
-        返回:
-        ψ_k(c,d) 的解析解
+        Returns:
+        ψ_k(c,d) analytical solution
         """
         k = np.asarray(k)
 
-        # 标量情况
-        # 处理 k=0 的特殊情况
+        # Scalar case
+        # Handle special case for k=0
         mask_k0 = (k == 0)
         mask_k_nonzero = ~mask_k0
         
         result = np.zeros_like(k, dtype=float)
         
         if np.any(mask_k_nonzero):
-            # k ≠ 0 的情况
+            # k ≠ 0 case
             omega = k[mask_k_nonzero] * np.pi / (b - a)
             sin_term_d = np.sin(omega * (d - a))
             sin_term_c = np.sin(omega * (c - a))
@@ -228,36 +228,36 @@ class VSSPricerCOS:
             result[mask_k_nonzero] = (b - a) / (k[mask_k_nonzero] * np.pi) * (sin_term_d - sin_term_c)
         
         if np.any(mask_k0):
-            # k = 0 的情况
+            # k = 0 case
             result[mask_k0] = d - c
         
         return result
     
-    def _cal_integral_bounds(self, L: float, r:float , tau: float, h: float = 1e-6) -> tuple[float, float]:
+    def _cal_integral_bounds(self, L: float, r:float , tau: float) -> tuple[float, float]:
         """
-        计算积分区间 [a, b] 的上下限
+        Calculate integration interval [a, b] bounds
+        [a,b] = [c1 - L * sqrt(c2 + sqrt(c4)), c1 + L * sqrt(c2 + sqrt(c4))]
+        Parameters:
+        L: integration interval multiplier
+        tau: time to maturity
+        h: numerical differentiation step size (default adjusted to 1e-4 for stability)
         
-        参数:
-        L: 积分区间倍数
-        tau: 到期时间
-        h: 数值微分的步长（默认值调整为1e-4以提高稳定性）
-        
-        返回:
-        a, b: 积分区间端点
+        Returns:
+        a, b: integration interval endpoints
         """
-
-        # 使用更稳定的数值微分方法计算矩
+        # Define functions for numerical differentiation
         func_df1 = lambda x: -self._rss_cf(np.array([x])*1j, np.zeros(1), r, tau, 1.0).imag
         func_df2 = lambda x: -self._rss_cf(np.array([x])*1j, np.zeros(1), r, tau, 1.0).real
         func_df3 = lambda x:  self._rss_cf(np.array([x])*1j, np.zeros(1), r, tau, 1.0).imag
         func_df4 = lambda x:  self._rss_cf(np.array([x])*1j, np.zeros(1), r, tau, 1.0).real
 
-
+        # Compute moments using numerical differentiation
         mu1 = nd.Derivative(func_df1, n=1)(0)
         mu2 = nd.Derivative(func_df2, n=2)(0)
         mu3 = nd.Derivative(func_df3, n=3)(0)
         mu4 = nd.Derivative(func_df4, n=4)(0)
 
+        # Calculate cumulants
         c1 = mu1
         c2 = mu2 - mu1**2
         c4 = mu4 - 4*mu3*mu1 - 3*mu2**2 + 12*mu2*mu1**2 - 6*mu1**4
@@ -270,47 +270,47 @@ class VSSPricerCOS:
     def call(self, S: float, K: Union[float, np.ndarray], r: float, tau: float,
                    N: int = 256, L: int = 10) -> np.ndarray:
         """
-        使用优化COS方法计算Volterra Stein-Stein模型下的欧式看涨期权价格（多个行权价）
+        Calculate European call option prices under Volterra Stein-Stein model using COS method (multiple strikes)
         
-        参数:
-            S: 标的资产价格（标量）
-            K: 执行价格（标量或数组，形状为(M,)）
-            r: 无风险利率
-            tau: 到期时间
-            N: 余弦展开项数（默认256）
-            L: 积分区间倍数（默认10）
+        Parameters:
+            S: underlying asset price (scalar)
+            K: strike price (scalar or array, shape (M,))
+            r: risk-free rate
+            tau: time to maturity
+            N: number of cosine expansion terms (default 256)
+            L: integration interval multiplier (default 10)
             
-        返回:
-            看涨期权价格（与K同形状的数组）
+        Returns:
+            call option prices (array with same shape as K)
         """
-        # 确保K是numpy数组
+        # Ensure K is numpy array
         K = np.asarray(K)
         original_shape = K.shape
         K_flat = K.flatten()
         
-        # 计算积分区间 [a, b]
+        # Calculate integration interval [a, b]
         a,b = self._cal_integral_bounds(L, r, tau)
         b_minus_a = b - a
         
-        # 计算phi_{levy}
+        # Calculate phi_{levy}
         k = np.arange(N)
         omega = k * np.pi / b_minus_a
         
-        # 使用Volterra Stein-Stein特征函数计算phi_levy
-        # 这里使用moneyness=1.0来计算特征函数
+        # Use Volterra Stein-Stein characteristic function to compute phi_levy
+        # Use moneyness=1.0 to compute characteristic function here
         moneyness = 1.0
         u_array = omega * 1j
         w_array = np.zeros_like(omega, dtype=complex)  # 对于对数价格特征函数，w=0
 
         phi_levy = self._rss_cf(u_array, w_array, r, tau, moneyness)
-        phi_levy[0] *= 0.5  # 零频率项需要特殊缩放
+        phi_levy[0] *= 0.5  # Zero-frequency term requires special scaling
         
-        # 看涨期权的Uk系数
+        # Uk coefficients for call options
         Uk_call = (self._chi(0, b, a, b, k) - self._psi(0, b, a, b, k)) * 2 / b_minus_a
         
         Ck = phi_levy * Uk_call  # (N, )
         
-        # 计算Strike-wise项
+        # Calculate strike-wise terms
         x_vec = np.log(S / K_flat)
         strike_bias = np.exp(1j * omega[np.newaxis, :] * (x_vec[:, np.newaxis] - a))
         
@@ -321,20 +321,20 @@ class VSSPricerCOS:
     def put(self, S: float, K: Union[float, np.ndarray], r: float, tau: float,
                   N: int = 256, L: int = 10) -> np.ndarray:
         """
-        使用优化COS方法计算Volterra Stein-Stein模型下的欧式看跌期权价格（多个行权价）
+        Calculate European put option prices under Volterra Stein-Stein model using COS method (multiple strikes)
         
-        参数:
-            S: 标的资产价格（标量）
-            K: 执行价格（标量或数组，形状为(M,)）
-            r: 无风险利率
-            tau: 到期时间
-            N: 余弦展开项数（默认256）
-            L: 积分区间倍数（默认10）
+        Parameters:
+            S: underlying asset price (scalar)
+            K: strike price (scalar or array, shape (M,))
+            r: risk-free rate
+            tau: time to maturity
+            N: number of cosine expansion terms (default 256)
+            L: integration interval multiplier (default 10)
             
-        返回:
-            看跌期权价格（与K同形状的数组）
+        Returns:
+            put option prices (array with same shape as K)
         """
-        # 确保K是numpy数组
+        # Ensure K is numpy array
         K = np.asarray(K)
         original_shape = K.shape
         K_flat = K.flatten()
@@ -342,25 +342,25 @@ class VSSPricerCOS:
         a,b = self._cal_integral_bounds(L, r, tau)
         b_minus_a = b - a
         
-        # 计算phi_{levy}
+        # Calculate phi_{levy}
         k = np.arange(N)
         omega = k * np.pi / b_minus_a
         
-        # 使用Volterra Stein-Stein特征函数计算phi_levy
-        # 这里使用moneyness=1.0来计算特征函数
+        # Use Volterra Stein-Stein characteristic function to compute phi_levy
+        # Use moneyness=1.0 to compute characteristic function here
         moneyness = 1.0
         u_array = omega * 1j
         w_array = np.zeros_like(omega, dtype=complex)  # 对于对数价格特征函数，w=0
 
         phi_levy = self._rss_cf(u_array, w_array, r, tau, moneyness)
-        phi_levy[0] *= 0.5  # 零频率项需要特殊缩放
+        phi_levy[0] *= 0.5  # Zero-frequency term requires special scaling
         
-        # 看跌期权的Uk系数（与看涨期权不同）
+        # Uk coefficients for put options (different from call options)
         Uk_put = (self._psi(a, 0, a, b, k) - self._chi(a, 0, a, b, k)) * 2 / b_minus_a
         
         Ck = phi_levy * Uk_put  # (N, )
         
-        # 计算Strike-wise项
+        # Calculate strike-wise terms
         x_vec = np.log(S / K_flat)
         strike_bias = np.exp(1j * omega[np.newaxis, :] * (x_vec[:, np.newaxis] - a))
         
@@ -377,56 +377,56 @@ class VSSPricerCOS:
           N: int = 256,
           L: int = 10) -> dict[str, np.ndarray | list]:
         """
-        计算指定行权价看涨和看跌期权价格
-        优化版本：计算call和put行权价并集的cf，再分别算出call和put的Uk和strike_bias
+        Calculate call and put option prices for specified strikes
+        Compute cf for union of call and put strikes, then calculate Uk and strike_bias for calls and puts separately
         
-        参数:
-            S0 (float): 初始资产价格
-            strike (dict): 执行价字典 {'call': array, 'put': array}
-            r (float): 无风险利率
-            q (float): 股息率
-            tau (float): 到期时间
-            N (int): 余弦展开项数（默认256）
-            L (int): 积分区间倍数（默认10）
+        Parameters:
+            S0 (float): initial asset price
+            strike (dict): strike price dictionary {'call': array, 'put': array}
+            r (float): risk-free rate
+            q (float): dividend rate
+            tau (float): time to maturity
+            N (int): number of cosine expansion terms (default 256)
+            L (int): integration interval multiplier (default 10)
             
-        返回:
-            dict: {'call': 看涨期权价格数组, 'put': 看跌期权价格数组}
+        Returns:
+            dict: {'call': call option price array, 'put': put option price array}
         """
         assert list(strike.keys()) == ['call', 'put']
         
-        # 合并所有行权价并去重
+        # Combine all strikes and remove duplicates
         all_strikes = np.unique(np.concatenate([strike['call'], strike['put']]))
         all_strikes_flat = all_strikes.flatten()
         
-        # 计算积分区间 [a, b]
+        # Calculate integration interval [a, b]
         a,b = self._cal_integral_bounds(L, r, tau)
         b_minus_a = b - a
         
-        # 计算phi_{levy} - 一次性计算特征函数
+        # Calculate phi_{levy} - compute characteristic function once
         k = np.arange(N)
         omega = k * np.pi / b_minus_a
         
-        # 使用Volterra Stein-Stein特征函数计算phi_levy
+        # Use Volterra Stein-Stein characteristic function to compute phi_levy
         moneyness = 1.0
         u_array = omega * 1j
         w_array = np.zeros_like(omega, dtype=complex)  # 对于对数价格特征函数，w=0
 
         phi_levy = self._rss_cf(u_array, w_array, r, tau, moneyness)
-        phi_levy[0] *= 0.5  # 零频率项需要特殊缩放
+        phi_levy[0] *= 0.5  # Zero-frequency term requires special scaling
         
-        # 计算call和put的Uk系数
+        # Calculate Uk coefficients for calls and puts
         Uk_call = (self._chi(0, b, a, b, k) - self._psi(0, b, a, b, k)) * 2 / b_minus_a
         Uk_put = (self._psi(a, 0, a, b, k) - self._chi(a, 0, a, b, k)) * 2 / b_minus_a
         
-        # 计算call和put的Ck系数
+        # Calculate Ck coefficients for calls and puts
         Ck_call = phi_levy * Uk_call  # (N, )
         Ck_put = phi_levy * Uk_put   # (N, )
         
-        # 计算Strike-wise项
+        # Calculate strike-wise terms
         x_vec = np.log(S0 / all_strikes_flat)
         strike_bias = np.exp(1j * omega[np.newaxis, :] * (x_vec[:, np.newaxis] - a))
         
-        # 计算所有行权价的call和put价格
+        # Calculate call and put prices for all strikes
         discount_factor = np.exp(-r * tau)
         
         call_prices_all = all_strikes_flat * discount_factor * np.real(strike_bias @ Ck_call)
@@ -444,7 +444,7 @@ class VSSPricerCOS:
 
 
 if __name__ == "__main__":
-    # 参数设置
+    # Parameter settings
     param = VSSParam(
         kappa=8.9e-5,      # Mean reversion speed
         nu=0.176,         # Volatility of volatility
@@ -459,7 +459,7 @@ if __name__ == "__main__":
     r = 0.03
     q = 0.0
     tau = 5.0
-    # 测试多个行权价
+    # Test multiple strike prices
     K_array = np.array([
         13600, 13700, 13800, 13900, 14000, 14100, 14200, 14300, 14400, 14500,
         14600, 14700, 14800, 14900, 15000, 15100, 15200, 15300, 15400, 15500,
@@ -478,25 +478,25 @@ if __name__ == "__main__":
 
 
     
-    print(f"\nVolterra Stein-Stein模型COS定价测试:")
-    print(f"参数: kappa={param.kappa}, nu={param.nu}, rho={param.rho}, theta={param.theta}, X_0={param.X_0}, H={param.H}")
-    print(f"市场参数: S0={S0}, r={r}, tau={tau}")
-    print(f"行权价: {K_array}")
+    print(f"\nVolterra Stein-Stein model COS pricing test:")
+    print(f"Parameters: kappa={param.kappa}, nu={param.nu}, rho={param.rho}, theta={param.theta}, X_0={param.X_0}, H={param.H}")
+    print(f"Market parameters: S0={S0}, r={r}, tau={tau}")
+    print(f"Strike prices: {K_array}")
     
-    # 测试price方法
+    # Test price method
     strike_dict = {'call': K_array, 'put': K_array}
 
     pricer.n = 32
     if DEBUG:
         start = time.time()
         prices_less = pricer.price(S0, strike_dict, r, q, tau)
-        print(f"定价用时(n = {pricer.n}): {time.time() - start}")  
+        print(f"Pricing time (n = {pricer.n}): {time.time() - start}")
     else:
         prices_less = pricer.price(S0, strike_dict, r, q, tau)
     parity = prices_less['call'] + K_array * np.exp(-r * tau) - prices_less['put'] - S0
     print(f"tau = 1")
-    print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
-    for i, k in enumerate(K_array[::5]):
+    print("Strike\tCall Price\tPut Price\tParity Error")
+    for i, k in enumerate(K_array[::10]):
         print(f"{k}\t{prices_less['call'][i]:.6f}\t{prices_less['put'][i]:.6f}\t{parity[i]:.6e}")
 
     pricer.n *= 5
@@ -504,29 +504,29 @@ if __name__ == "__main__":
     if DEBUG:
         start = time.time()
         prices_more = pricer.price(S0, strike_dict, r, q, tau)
-        print(f"定价用时(n = {pricer.n}): {time.time() - start}")  
+        print(f"Pricing time (n = {pricer.n}): {time.time() - start}")
     else:
         prices_more = pricer.price(S0, strike_dict, r, q, tau)
     parity = prices_more['call'] + K_array * np.exp(-r * tau) - prices_more['put'] - S0
     # print(f"tau = 2")
-    print("行权价\t看涨期权价格\t看跌期权价格\t平价误差")
-    for i, k in enumerate(K_array[::5]):
+    print("Strike\tCall Price\tPut Price\tParity Error")
+    for i, k in enumerate(K_array[::10]):
         print(f"{k}\t{prices_more['call'][i]:.6f}\t{prices_more['put'][i]:.6f}\t{parity[i]:.6e}")
     
     if DEBUG:
-        print("\n比较不同n值下的定价结果差异:")
+        print("\nComparing pricing results with different n values:")
         fig, axs = plt.subplots(2, 1, figsize=(10, 8))
         print(f"relative error: {np.max(np.abs((prices_less['call'] - prices_more['call']) / prices_more['call'])):.6e} (call),\
                {np.max(np.abs((prices_less['put'] - prices_more['put']) / prices_more['put'])):.6e} (put)")
 
-        axs[0].plot(K_array, prices_less['call'], label='Call n less')
-        axs[0].plot(K_array, prices_more['call'], '--', label='Call n more')
-        axs[0].plot(K_array, prices_less['put'], label='Put n less')
-        axs[0].plot(K_array, prices_more['put'], '--', label='Put n more')
+        axs[0].plot(K_array, prices_less['call'], label='Call (smaller n)')
+        axs[0].plot(K_array, prices_more['call'], '--', label='Call (larger n)')
+        axs[0].plot(K_array, prices_less['put'], label='Put (smaller n)')
+        axs[0].plot(K_array, prices_more['put'], '--', label='Put (larger n)')
         axs[0].legend()
 
         axs[1].plot(K_array, np.abs((prices_less['call'] - prices_more['call'])), label='Call abs error')
         axs[1].plot(K_array, np.abs((prices_less['put'] - prices_more['put'])), label='Put abs error')
         axs[1].legend()
         plt.show()
-    print(f"\n=== Volterra Stein-Stein COS定价器测试完成 ===")
+    print(f"\n=== Volterra Stein-Stein COS pricer test completed ===")

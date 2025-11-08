@@ -1,7 +1,8 @@
 .roo
 .claude
 AGENTS.md
+.hyp2f1/
 __pycache__
-.*.ipynb
-.*.py
+_*
 *.svg
+opt.txt
