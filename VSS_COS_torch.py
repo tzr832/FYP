@@ -13,93 +13,7 @@ import warnings
 from scipy.special import roots_legendre
 warnings.filterwarnings('ignore')
 
-
-def hyp2f1_series(a, b, c, z, max_terms=20, tol=1e-8, device='cpu'):
-    """
-    使用级数展开近似计算 hyp2f1(a, b, c; z)
-    
-    参数:
-        a, b, c, z: 输入张量，满足 |z| < 1 时级数收敛
-        max_terms: 最大迭代次数
-        tol: 收敛容差（当项的值小于 tol 时停止）
-    
-    返回:
-        近似 hyp2f1 值的张量
-    """
-    # 初始化结果和各项
-    result = torch.ones_like(z, device=device)
-    term = torch.ones_like(z, device=device)
-    
-    for k in torch.arange(1, max_terms, device=device):
-        log_term = (torch.lgamma(a + k) - torch.lgamma(a) +
-                    torch.lgamma(b + k) - torch.lgamma(b) -
-                    torch.lgamma(c + k) + torch.lgamma(c) -
-                    torch.lgamma(torch.tensor(k + 1.0, device=device))) + k * torch.log(z)
-        term = torch.exp(log_term)
-        
-        # 检查NaN值
-        if torch.any(torch.isnan(term)):
-            break
-            
-        result = result + term
-        
-        # 检查收敛性
-        if torch.max(torch.abs(term)) < tol:
-            break
-    if k == max_terms - 1:
-        term_abs = torch.abs(term)
-        if not torch.any(torch.isnan(term_abs)):
-            print(f"Warning: hyp2f1({a.item():.06f},{b.item():.06f},{c.item():.06f},...) did not converge within the maximum number of terms, max item size: {torch.max(term_abs):.6e}")
-    return result
-
-
-def hyp2f1_integral(a, b, c, z, n_points=100, device='cpu'):
-    """PyTorch版本的hyp2f1积分实现，使用高斯-勒让德积分法提高精度，支持数组z输入"""
-    import torch
-    
-    # 确保z是张量
-    if not isinstance(z, torch.Tensor):
-        z = torch.tensor(z, dtype=torch.float64, device=device)
-    
-    # 使用高斯-勒让德积分法
-    # 将积分区间从[0,1]变换到[-1,1]
-    def gauss_legendre_points_weights(n):
-        """生成高斯-勒让德积分点和权重"""
-        # 使用numpy生成高斯-勒让德积分点和权重，然后转换为torch张量
-        
-        points, weights = roots_legendre(n)
-        return torch.tensor(points, dtype=torch.float64, device=device), torch.tensor(weights, dtype=torch.float64, device=device)
-    
-    # 获取高斯积分点和权重
-    t_gauss, weights_gauss = gauss_legendre_points_weights(n_points)
-    
-    # 将积分点从[-1,1]变换到[0,1]
-    t_transformed = (t_gauss + 1) / 2
-    weights_transformed = weights_gauss / 2
-    
-    # 重塑维度以便正确广播
-    # t_transformed: (n_points,) -> (n_points, 1)
-    # z: (n,) -> (1, n)
-    # 结果: (n_points, n)
-    t_expanded = t_transformed.unsqueeze(1)  # (n_points, 1)
-    z_expanded = z.unsqueeze(0)              # (1, n)
-    weights_expanded = weights_transformed.unsqueeze(1)  # (n_points, 1)
-    
-    # 计算被积函数
-    integrand = (t_expanded**(b-1) *
-                (1-t_expanded)**(c-b-1) *
-                (1 - z_expanded * t_expanded)**(-a))
-    
-    # 计算加权积分
-    weighted_integrand = integrand * weights_expanded
-    integral = torch.sum(weighted_integrand, dim=0)
-    
-    # 计算Gamma因子
-    gamma_factor = torch.exp(torch.lgamma(c) - torch.lgamma(b) - torch.lgamma(c-b))
-    
-    return gamma_factor * integral
-
-
+from hyp2f1_numerical import hyp2f1
 
 class VSSParamTorch:
     """
@@ -179,16 +93,20 @@ class VSSPricerCOSTorch:
         t = torch.linspace(0, T.item(), self.n + 1, dtype=torch.float64, device=self.device)
         
         # Define indices for 2D matrices - exactly matching NumPy implementation
-        tj_1 = t[:-1].repeat(self.n, 1).T  # Times tj excluding the final point
+        # tj_1 = t[:-1].repeat(self.n, 1).T  # Times tj excluding the final point
+        # ti_1 = tj_1.T  # Transpose to create a grid of ti values
+        # tj = t[1:].repeat(self.n, 1).T  # Times tj excluding the initial point
+
+        tj_1 = t[:-1].unsqueeze(0).repeat(self.n, 1) # Times tj excluding the final point
         ti_1 = tj_1.T  # Transpose to create a grid of ti values
-        tj = t[1:].repeat(self.n, 1).T  # Times tj excluding the initial point
+        tj = t[1:].unsqueeze(0).repeat(self.n, 1)  # Times tj excluding the initial point
         
         # Initialize kernel matrix KK
         self.KK = torch.zeros((self.n, self.n), dtype=torch.float64, device=self.device)
         
         # K^n_{ij}= \bm 1_{j\leq i-1}\int_{t_{j-1}}^{t_j} K(t_{i-1},s)ds
         mask = tj <= ti_1
-        self.KK[mask] = ((ti_1 - tj_1) ** alpha - (ti_1 - tj) ** alpha)[mask] / torch.exp(torch.lgamma(1 + alpha))
+        self.KK[mask] = ((ti_1 - tj_1)[mask] ** alpha - (ti_1 - tj)[mask] ** alpha) / torch.exp(torch.lgamma(1 + alpha))
         
         self.KK_sum = self.KK + self.KK.T
         self.KK_mul = self.KK @ self.KK.T
@@ -197,26 +115,15 @@ class VSSPricerCOSTorch:
         # In practice, we need to implement hyp2f1 or use approximation
         min_t = torch.minimum(ti_1, tj_1)
         max_t = torch.maximum(ti_1, tj_1)
-        
-        ratio = torch.minimum(ti_1, tj_1) / torch.maximum(ti_1, tj_1)
-        ratio[torch.isnan(ratio)] = 0.0  # Handle 0/0 case
-        shape = ratio.shape
-        # hyp2f1_approx = hyp2f1_series(torch.tensor([1.0], dtype=torch.float64, device=self.device),
-        #                               1 - alpha, 1 + alpha,
-        #                               ratio,
-        #                               max_terms=100, tol=1e-8, device=self.device)
-        hyp2f1_approx = hyp2f1_integral(1 - alpha,
-                                        torch.tensor([1.0], dtype=torch.float64, device=self.device),
-                                        1 + alpha,
-                                        ratio.flatten(),
-                                        n_points=1000,
-                                        device=self.device).reshape(shape)
-        self.SIG = (hyp2f1_approx * min_t ** alpha / (max_t ** (1 - alpha)) * 
-                   self.params.nu ** 2 / (torch.exp(torch.lgamma(1 + alpha)) * torch.exp(torch.lgamma(alpha))))
-        
-        # Handle numerical issues
-        self.SIG[0, 0] = 0
-        self.SIG[torch.isinf(self.SIG)] = 0
+
+        max_t[0,0] = 1. # to deal with 0/0 error
+
+        ratio = min_t / max_t
+        hyp2f1_approx = hyp2f1(1 - alpha,
+                            torch.tensor([1.0], dtype=torch.float64, device=self.device),
+                            1 + alpha,
+                            ratio)
+        self.SIG = self.params.nu ** 2 * (hyp2f1_approx * min_t ** alpha / (max_t ** (1 - alpha)) / (torch.exp(torch.lgamma(1 + alpha)) * torch.exp(torch.lgamma(alpha))))
         
         # Compute adjusted vector g based on initial conditions
         self.g = (self.params.X_0 + self.params.theta * t[:-1] ** alpha / torch.exp(torch.lgamma(1 + alpha)))
@@ -516,35 +423,6 @@ class VSSPricerCOSTorch:
         
         return {'call': call_prices, 'put': put_prices}
     
-    def compute_gradients(self, S: torch.Tensor, K: torch.Tensor, r: torch.Tensor,
-                         tau: torch.Tensor, N: int = 256, L: float = 10.0) -> Dict[str, torch.Tensor]:
-        """
-        Compute gradients of call price with respect to all model parameters
-        """
-        # Ensure all parameters require gradients
-        self.params.set_requires_grad(True)
-        
-        # Clear any existing gradients
-        for param in [self.params.kappa, self.params.nu, self.params.rho,
-                     self.params.theta, self.params.X_0, self.params.H]:
-            if param.grad is not None:
-                param.grad.zero_()
-        
-        # Compute call price with gradient tracking
-        call_price = self.call_price(S, K, r, tau, N, L)
-        
-        # Compute gradients
-        gradients = {}
-        call_price.backward()
-        
-        gradients['kappa'] = self.params.kappa.grad.clone() if self.params.kappa.grad is not None else None
-        gradients['nu'] = self.params.nu.grad.clone() if self.params.nu.grad is not None else None
-        gradients['rho'] = self.params.rho.grad.clone() if self.params.rho.grad is not None else None
-        gradients['theta'] = self.params.theta.grad.clone() if self.params.theta.grad is not None else None
-        gradients['X_0'] = self.params.X_0.grad.clone() if self.params.X_0.grad is not None else None
-        gradients['H'] = self.params.H.grad.clone() if self.params.H.grad is not None else None
-        
-        return gradients
 
 if __name__ == "__main__":
     import time
@@ -565,7 +443,7 @@ if __name__ == "__main__":
         device=device
     )
     
-    pricer = VSSPricerCOSTorch(params, n=63, device=device)
+    pricer = VSSPricerCOSTorch(params, n=252, device=device)
     
     # Test data
     S0 = torch.tensor(25617.42, dtype=torch.float64, device=device)
@@ -583,14 +461,14 @@ if __name__ == "__main__":
     start = time.time()
     call_price = pricer.call_price(S0, K, r, tau)
     print("Strike\tCall Price")
-    for strike, price in zip(K.tolist(), call_price.tolist()):
+    for strike, price in zip(K.tolist()[::10], call_price.tolist()[::10]):
         print(f"{strike:.2f}\t{price:.6f}")
     print(f"computed in {time.time() - start:.4f} seconds")
         
 
     
     # # Compare with NumPy
-    # from VolterraSteinSteinCOS import VSSParam, VSSPricerCOS
+    # from VSS_COS import VSSParam, VSSPricerCOS
     # param_np = VSSParam(
     #     kappa=8.9e-5,
     #     nu=0.176,
@@ -606,17 +484,7 @@ if __name__ == "__main__":
     # for strike, price in zip(K.tolist(), call_price_np):
     #     print(f"{strike:.2f}\t{price:.6f}")
     # print(f"computed in {time.time() - start:.4f} seconds")
-    # print(f"Relative error: {abs(call_price.detach().cpu().numpy() - call_price_np) / abs(call_price_np)}")
-
-    
-    # Test gradient computation
-    # print("\n=== Gradient Computation Test ===")
-    # gradients = pricer.compute_gradients(S0, K_single, r, tau)
-    # for param_name, grad in gradients.items():
-    #     if grad is not None:
-    #         print(f"Gradient w.r.t {param_name}: {grad.item():.6e}")
-    #     else:
-    #         print(f"Gradient w.r.t {param_name}: None")
+    # print(f"Abs error: {abs(call_price.detach().cpu().numpy() - call_price_np)}")
     
     
     print("\n=== Test Completed Successfully ===")

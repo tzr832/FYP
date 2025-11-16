@@ -4,13 +4,14 @@ Precise PyTorch implementation of Volterra Stein-Stein model
 This version aims to exactly replicate the NumPy implementation
 """
 
+import json
 import torch
-import torch.nn as nn
+from torch.optim import Adam
 import numpy as np
 import numdifftools as nd
 from typing import Union, Tuple, Dict
 import warnings
-warnings.filterwarnings('ignore')
+# warnings.filterwarnings('ignore')
 
 
 
@@ -38,7 +39,8 @@ class VSSParamTorch:
         
         self.c = torch.rand(terms, dtype=torch.float64, device=device, requires_grad=True)
         self.gamma = torch.rand(terms, dtype=torch.float64, device=device, requires_grad=True)
-
+        with torch.no_grad():
+                self.gamma.mul_(10.0) # Scale gamma to a reasonable range
         self._validate_parameters()
     
     def _validate_parameters(self):
@@ -60,8 +62,13 @@ class VSSParamTorch:
     
     def set_requires_grad(self, requires_grad: bool = True):
         """Set requires_grad for all parameters"""
-        for param in [self.kappa, self.nu, self.rho, self.theta, self.X_0, self.c, self.gamma]:
-            param.requires_grad = requires_grad
+        for param_name, param in [('kappa', self.kappa), ('nu', self.nu), ('rho', self.rho),
+                                 ('theta', self.theta), ('X_0', self.X_0), ('c', self.c), ('gamma', self.gamma)]:
+            try:
+                param.requires_grad = requires_grad
+            except RuntimeError as e:
+                print(f"ERROR: Failed to set requires_grad for {param_name}: {e}")
+                raise
 
 
 class VSSPricerCOSTorch:
@@ -81,7 +88,17 @@ class VSSPricerCOSTorch:
         self.g = None
         self.KK_sum = None
         self.KK_mul = None
-        
+    
+    def set_params(self, params: VSSParamTorch) -> None:
+        """Set model parameters"""
+        self.params = params
+
+        self.KK = None
+        self.SIG = None
+        self.g = None
+        self.KK_sum = None
+        self.KK_mul = None
+    
     def _compute_kernel_matrices(self, T: torch.Tensor) -> None:
         """
         Computes the kernel matrix, covariance matrix, and adjusted input vector for the
@@ -117,9 +134,9 @@ class VSSPricerCOSTorch:
         t = torch.linspace(0, T.item(), n + 1, dtype=torch.float64, device=self.device)
 
         # Define indices for 2D matrices
-        tj_1 = torch.tile(t[:-1], (n, 1)).T  # Times tj excluding the final point
+        tj_1 = t[:-1].unsqueeze(0).repeat(self.n, 1) # Times tj excluding the final point
         ti_1 = tj_1.T  # Transpose to create a grid of ti values
-        tj = torch.tile(t[1:], (n, 1)).T  # Times tj excluding the initial point
+        tj = t[1:].unsqueeze(0).repeat(self.n, 1)  # Times tj excluding the initial point
 
         # Initialize kernel matrix KK for exponential decay kernel
         KK = torch.zeros((terms, n, n), dtype=torch.float64, device=self.device)
@@ -481,6 +498,58 @@ class VSSPricerCOSTorch:
         gradients['c'] = self.params.c.grad.clone() if self.params.c.grad is not None else None
         
         return gradients
+    
+    def objective(self, dict_path: str='Data/250901.json') -> torch.Tensor:
+        """
+        Objective function for calibration: RMSE between model and market prices
+        """
+
+        with open(dict_path, 'r', encoding='utf-8') as f:
+            optiondict = json.load(f)
+
+        S0 = torch.tensor(optiondict['HSI'], dtype=torch.float64, device=self.device)
+        r = torch.tensor(optiondict['rf'], dtype=torch.float64, device=self.device)
+        
+        error = torch.tensor([], dtype=torch.float64, device=self.device)
+        
+        for key, value in optiondict.items():
+            if not isinstance(value, dict):
+                continue
+            
+            strike = {'call': torch.tensor(value['strike']['call'], dtype=torch.float64, device=self.device),
+                      'put': torch.tensor(value['strike']['put'], dtype=torch.float64, device=self.device)}
+
+            q = torch.tensor(0.0, dtype=torch.float64, device=self.device)
+            tau = torch.tensor(value['tau'], dtype=torch.float64, device=self.device)
+            
+            # Set number of terms based on tau
+            self.n = max(32, int(tau.item() * 63))
+            
+            modelPrice = self.price(S0, strike, r, q, tau)
+            
+            error_call = (modelPrice['call'] - torch.tensor(value['price']['call'], dtype=torch.float64, device=self.device)) ** 2
+            error_put = (modelPrice['put'] - torch.tensor(value['price']['put'], dtype=torch.float64, device=self.device)) ** 2
+            error = torch.cat([error, error_call, error_put])
+        
+        rmse = torch.sqrt(torch.mean(error))
+        return rmse
+
+    def train(self, dict_path: str='Data/250901.json', lr: float=1e-4, epochs: int=1000) -> None:
+        """
+        Train model parameters using Adam optimizer to minimize objective function
+        """
+        optimizer = Adam(self.params.to_dict().values(), lr=lr)
+        last_error = torch.tensor(float('inf'), dtype=torch.float64, device=self.device)
+        for epoch in range(epochs):
+            optimizer.zero_grad()
+            error = self.objective(dict_path)
+            error.backward()
+            optimizer.step()
+            print(f"Epoch {epoch}, Objective: {error.item():.6f}")
+        
+            if torch.abs(last_error - error) < 1e-6:
+                print("Convergence reached.")
+                break
 
 if __name__ == "__main__":
     import time
@@ -497,7 +566,7 @@ if __name__ == "__main__":
         rho=-0.704,
         theta=-0.044,
         X_0=0.113,
-        terms=5,
+        terms=10,
         device=device
     )
     
@@ -512,15 +581,20 @@ if __name__ == "__main__":
     print("\n=== Precise PyTorch Volterra Stein-Stein COS Pricer Test ===")
     print(f"Parameters: kappa={params.kappa.item()}, nu={params.nu.item()}, rho={params.rho.item()}, "
             f"theta={params.theta.item()}, X_0={params.X_0.item()}")
-    print(f"Market parameters: S0={S0.item()}, r={r.item()}, tau={tau.item()}")
+    print(f"Number of terms: {len(params.c)}")
+    print(f"c: {params.c.tolist()}")
+    print(f"gamma: {params.gamma.tolist()}")
+    print(f"Market parameters: S0={S0.item()}, r={r.item()}")
     
     # Test call price
-    print("\n=== Testing call_price method ===")
+    print("\n=== Testing objective method ===")
     start = time.time()
-    call_price = pricer.call_price(S0, K, r, tau)
-    print("Strike\tCall Price")
-    for strike, price in zip(K.tolist(), call_price.tolist()):
-        print(f"{strike:.2f}\t{price:.6f}")
+    # call_price = pricer.call_price(S0, K, r, tau)
+    error = pricer.objective(dict_path='Data/250901.json')
+    print(f"Objective RMSE: {error.item():.6f}")
+    # print("Strike\tCall Price")
+    # for strike, price in zip(K.tolist(), call_price.tolist()):
+    #     print(f"{strike:.2f}\t{price:.6f}")
     print(f"computed in {time.time() - start:.4f} seconds")
 
 
@@ -529,7 +603,7 @@ if __name__ == "__main__":
     print("\n=== Gradient Computation Test ===")
     # K_single = torch.tensor([25000.0], dtype=torch.float64, device=device)
     start = time.time()
-    gradients = pricer.compute_gradients(call_price.mean())
+    gradients = pricer.compute_gradients(error)
     print(f"Gradients computed in {time.time() - start:.4f} seconds")
     for param_name, grad in gradients.items():
         if grad is not None:
