@@ -9,9 +9,6 @@ import torch.nn as nn
 import numpy as np
 import numdifftools as nd
 from typing import Union, Tuple, Dict
-import warnings
-from scipy.special import roots_legendre
-warnings.filterwarnings('ignore')
 
 from hyp2f1_numerical import hyp2f1
 
@@ -138,11 +135,16 @@ class VSSPricerCOSTorch:
         elif self.g.shape[0] != self.n:
             self._compute_kernel_matrices(T)
         
+        u = u.unsqueeze(0) if u.dim() == 0 else u
+        if self.device != u.device:
+            u = u.to(self.device)
+            w = w.to(self.device)
+
         a = w + 0.5 * (u**2 - u)
         b = self.params.kappa + self.params.rho * self.params.nu * u
         
         # Compute tilde(SIG) = inv(I - b * K) * SIG * inv(I - b * K).T
-        u = u.unsqueeze(0) if u.dim() == 0 else u
+        
         batch_size = u.shape[0]
         I = torch.eye(self.n, dtype=torch.complex128, device=self.device).unsqueeze(0).repeat(batch_size, 1, 1)
         
@@ -265,10 +267,10 @@ class VSSPricerCOSTorch:
         """
         # Define functions for numerical differentiation
         moneyness = torch.tensor(1.0, dtype=torch.float64, device=self.device)
-        func_df1 = lambda x: -self._rss_cf_torch(torch.tensor([x])*1j, torch.zeros(1), r, tau, moneyness).detach().numpy().imag
-        func_df2 = lambda x: -self._rss_cf_torch(torch.tensor(x)*1j, torch.zeros(1), r, tau, moneyness).detach().numpy().real
-        func_df3 = lambda x:  self._rss_cf_torch(torch.tensor([x])*1j, torch.zeros(1), r, tau, moneyness).detach().numpy().imag
-        func_df4 = lambda x:  self._rss_cf_torch(torch.tensor(x)*1j, torch.zeros(1), r, tau, moneyness).detach().numpy().real
+        func_df1 = lambda x: -self._rss_cf_torch(torch.tensor([x])*1j, torch.zeros(1), r, tau, moneyness).cpu().detach().numpy().imag
+        func_df2 = lambda x: -self._rss_cf_torch(torch.tensor(x)*1j, torch.zeros(1), r, tau, moneyness).cpu().detach().numpy().real
+        func_df3 = lambda x:  self._rss_cf_torch(torch.tensor([x])*1j, torch.zeros(1), r, tau, moneyness).cpu().detach().numpy().imag
+        func_df4 = lambda x:  self._rss_cf_torch(torch.tensor(x)*1j, torch.zeros(1), r, tau, moneyness).cpu().detach().numpy().real
 
         # Compute moments using numerical differentiation
         mu1 = nd.Derivative(func_df1, n=1)(0)
@@ -284,7 +286,7 @@ class VSSPricerCOSTorch:
         a = c1 - L * np.sqrt(c2 + np.sqrt(c4))
         b = c1 + L * np.sqrt(c2 + np.sqrt(c4))    
         
-        return torch.tensor(a), torch.tensor(b)
+        return torch.tensor(a, device=self.device), torch.tensor(b, device=self.device)
 
     def call_price(self, S: torch.Tensor, K: torch.Tensor, r: torch.Tensor, 
                   tau: torch.Tensor, N: int = 256, L: float = 10.0) -> torch.Tensor:
