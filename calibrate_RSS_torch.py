@@ -10,10 +10,15 @@ def inv_sigmoid(y):
     return log(y / (1 - y))
 
 class CalibrateRSS(VSSPricerCOSTorch):
-    def __init__(self, dict_path = "Data/250901.json"):
+    def __init__(self, dict_path = "Data/250901.json", device=None):
         super().__init__(VSSParamTorch())
         with open(f'{dict_path}', 'r') as f:
             self.option_dict: dict = json.load(f)
+        if device == None:
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        else:
+            self.device = device
+        print(f"Using device: {self.device}")
         
     def objective(self):
         S0 = self.option_dict['HSI']
@@ -86,9 +91,14 @@ class CalibrateRSS(VSSPricerCOSTorch):
 
 
 def test():
-    calibrator = CalibrateRSS()
+    import time
+    calibrator = CalibrateRSS(device='cuda')
+    start = time.time()
     loss = calibrator.objective()
+    print(f"forward: {time.time() - start}")
+    start = time.time()
     loss.backward()
+    print(f"backward: {time.time() - start}")
 
     print(f"Loss={loss.item():.6f}", end=" | ")
     print(f"Params: kappa={calibrator.params.kappa.item():.8f}, nu={calibrator.params.nu.item():.6f}, "
@@ -109,4 +119,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    test()
