@@ -394,12 +394,12 @@ if __name__ == "__main__":
     params = NetworkParams()
     calibrator = VSSPricerCOSTorch(params)
     
-    S0 = torch.tensor(100, dtype=torch.float64, device=device)
+    S0 = torch.tensor(25000., dtype=torch.float64, device=device)
     r = torch.tensor(0.03, dtype=torch.float64, device=device)
     q = torch.tensor(0., dtype=torch.float64, device=device)
     tau = torch.tensor(1.0, dtype=torch.float64, device=device)
-    K = {'call': torch.linspace(80., 120., steps=10, dtype=torch.float64, device=device),
-         'put': torch.linspace(80., 120., steps=10, dtype=torch.float64, device=device)}
+    K = {'call': torch.linspace(16000., 35000., steps=10, dtype=torch.float64, device=device),
+         'put': torch.linspace(16000., 35000., steps=10, dtype=torch.float64, device=device)}
     
     print("\n=== Precise PyTorch Volterra Stein-Stein COS Pricer Test ===")
     print(f"Parameters: kappa={params.kappa.item()}, nu={params.nu.item()}, rho={params.rho.item()}, "
