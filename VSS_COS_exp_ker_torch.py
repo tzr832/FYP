@@ -17,7 +17,7 @@ class VSSParamTorch:
     """
     def __init__(self, 
                  kappa: float = -8.9e-5,
-                 nu: float = 0.176,
+                #  nu: float = 0.176,
                  rho: float = -0.704,
                  theta: float = -0.044,
                  X_0: float = 0.113,
@@ -28,7 +28,7 @@ class VSSParamTorch:
         
         # Convert parameters to tensors with requires_grad=True for gradient computation
         self.kappa = torch.tensor(kappa, dtype=torch.float64, device=device, requires_grad=True)
-        self.nu = torch.tensor(nu, dtype=torch.float64, device=device, requires_grad=True)
+        self.nu = torch.tensor(1, dtype=torch.float64, device=device)
         self.rho = torch.tensor(rho, dtype=torch.float64, device=device, requires_grad=True)
         self.theta = torch.tensor(theta, dtype=torch.float64, device=device, requires_grad=True)
         self.X_0 = torch.tensor(X_0, dtype=torch.float64, device=device, requires_grad=True)
@@ -36,7 +36,8 @@ class VSSParamTorch:
         self.c = torch.rand(terms, dtype=torch.float64, device=device, requires_grad=True)
         self.gamma = torch.rand(terms, dtype=torch.float64, device=device, requires_grad=True)
         with torch.no_grad():
-                self.gamma.mul_(10.0) # Scale gamma to a reasonable range
+            self.gamma.mul_(10.0) # Scale gamma to a reasonable range
+            self.c.mul_(0.1)
         self._validate_parameters()
     
     def _validate_parameters(self):
@@ -47,13 +48,13 @@ class VSSParamTorch:
     def to_dict(self) -> Dict[str, torch.Tensor]:
         """Return parameters as dictionary"""
         return {
-            'kappa': self.kappa,
-            'nu': self.nu,
-            'rho': self.rho,
-            'theta': self.theta,
-            'X_0': self.X_0,
-            'c': self.c,
-            'gamma': self.gamma
+            'kappa': self.kappa.item(),
+            'nu': self.nu.item(),
+            'rho': self.rho.item(),
+            'theta': self.theta.item(),
+            'X_0': self.X_0.item(),
+            'c': self.c.tolist(),
+            'gamma': self.gamma.tolist()
         }
     
     def set_requires_grad(self, requires_grad: bool = True):
@@ -535,24 +536,28 @@ class VSSPricerCOSTorch:
         rmse = torch.sqrt(torch.mean(error))
         return rmse
 
-    def train(self, dict_path: str='Data/250901.json', lr: float=1e-4, epochs: int=1000) -> None:
+    def calibrate(self, dict_path: str='Data/250901.json', tol=1e-3, lr: float=1e-4, epochs: int=1000) -> None:
         """
         Train model parameters using Adam optimizer to minimize objective function
         """
         optimizer = Adam(self.params.to_dict().values(), lr=lr)
-        last_error = torch.tensor(float('inf'), dtype=torch.float64, device=self.device)
+        last_loss = torch.tensor(float('inf'), dtype=torch.float64, device=self.device)
         for epoch in range(epochs):
             optimizer.zero_grad()
-            error = self.objective(dict_path)
-            error.backward()
+            loss = self.objective(dict_path)
+            loss.backward()
             optimizer.step()
-            print(f"Epoch {epoch}, Objective: {error.item():.6f}")
+            print(f"Epoch {epoch}, Objective: {loss.item():.6f}")
         
-            if torch.abs(last_error - error) < 1e-6:
-                print("Convergence reached.")
-                break
+            if torch.abs(last_loss - loss) < 1e-3:
+                print(f"Convergence reached. ({tol})")
+                return {"suc": True, "loss": loss.item(), "param": self.params.to_dict()}
+            last_loss = loss
 
-if __name__ == "__main__":
+        print(f"Convergence didn't reached after {epochs} epochs. ({tol})")
+        return {"suc": False, "loss": loss.item(), "param": self.params.to_dict()}
+    
+def test():
     import time
     # Test the precise PyTorch implementation
     # device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -567,7 +572,7 @@ if __name__ == "__main__":
     # Create parameters
     params = VSSParamTorch(
         kappa=8.9e-5,
-        nu=0.176,
+        # nu=0.176,
         rho=-0.704,
         theta=-0.044,
         X_0=0.113,
@@ -621,3 +626,21 @@ if __name__ == "__main__":
     
     
     print("\n=== Test Completed Successfully ===")
+
+def main():
+    device = 'cpu'
+    print(f"Using device: {device}")
+    
+    torch.manual_seed(42)
+
+    calibrator = VSSPricerCOSTorch(VSSParamTorch(), device=device)
+
+    result = calibrator.calibrate()
+    with open("VSS_calibration_result.json", 'w', encoding='utf-8') as f:
+        json.dump(result, f)
+
+    print("Optimization result has been saved")
+
+
+if __name__ == "__main__":
+    main()

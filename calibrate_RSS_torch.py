@@ -46,16 +46,24 @@ class CalibrateRSS(VSSPricerCOSTorch):
         loss = torch.sqrt(error.mean())
         return loss
 
-    def calibrate(self, maxIter = 1000):
-        init_kappa = torch.tensor(-8.9e-5, dtype=torch.float64, requires_grad=True)
-        init_nu = torch.tensor(0.176, dtype=torch.float64, requires_grad=True)
-        init_rho = torch.tensor(atanh(-0.704), dtype=torch.float64, requires_grad=True)
-        init_theta = torch.tensor(-0.044, dtype=torch.float64, requires_grad=True)
-        init_X0 = torch.tensor(0.113, dtype=torch.float64, requires_grad=True)
-        init_H = torch.tensor(inv_sigmoid(0.279), dtype=torch.float64, requires_grad=True)
+    def calibrate(self, init_param: VSSParamTorch=None, maxIter = 1000):
+        if init_param == None:
+            init_kappa = torch.tensor(-8.9e-5, dtype=torch.float64, requires_grad=True)
+            init_nu = torch.tensor(0.176, dtype=torch.float64, requires_grad=True)
+            init_rho = torch.tensor(atanh(-0.704), dtype=torch.float64, requires_grad=True)
+            init_theta = torch.tensor(-0.044, dtype=torch.float64, requires_grad=True)
+            init_X0 = torch.tensor(0.113, dtype=torch.float64, requires_grad=True)
+            init_H = torch.tensor(inv_sigmoid(0.279), dtype=torch.float64, requires_grad=True)
+        else:
+            init_kappa = torch.tensor(init_param.kappa.item(), dtype=torch.float64, requires_grad=True)
+            init_nu = torch.tensor(init_param.nu.item(), dtype=torch.float64, requires_grad=True)
+            init_rho = torch.tensor(atanh(init_param.rho.item()), dtype=torch.float64, requires_grad=True)
+            init_theta = torch.tensor(init_param.theta.item(), dtype=torch.float64, requires_grad=True)
+            init_X0 = torch.tensor(init_param.X_0.item(), dtype=torch.float64, requires_grad=True)
+            init_H = torch.tensor(inv_sigmoid(init_param.H.item()), dtype=torch.float64, requires_grad=True)
 
         optmizer = torch.optim.Adam(params=[init_kappa, init_nu, init_rho, init_theta, init_X0, init_H],
-                                    # lr = 0.05
+                                    lr = 0.01
                                     )
         prev_loss = torch.inf
         for epoch in range(maxIter):
@@ -85,7 +93,8 @@ class CalibrateRSS(VSSPricerCOSTorch):
             if abs(loss - prev_loss) < 1e-3:
                 print(f"Optimization finished! The optimum paramters are found within given tolerance (1e-3)")
                 return {"suc": True, "loss": loss.item(), "param": param.to_dict()}
-        
+            prev_loss = loss
+
         print(f"Optimization finished! The optimum paramters are not found within given tolerance (1e-3)")
         return {"suc": False, "loss": loss.item(), "param": param.to_dict()}
 
@@ -93,6 +102,13 @@ class CalibrateRSS(VSSPricerCOSTorch):
 def test():
     import time
     calibrator = CalibrateRSS(device='cuda')
+    init_param = VSSParamTorch(kappa=0.00842271,
+                               nu=0.12275754,
+                               rho=0.84508075,
+                               X_0=-0.02704256,
+                               theta=0.16772171,
+                               H=0.09164193)
+    calibrator.params = init_param
     start = time.time()
     loss = calibrator.objective()
     print(f"forward: {time.time() - start}")
@@ -109,14 +125,21 @@ def test():
             f"X_0={calibrator.params.X_0.grad.item():.6f}, H={calibrator.params.H.grad.item():.6f}")
 
 def main():
-    calibrator = CalibrateRSS()
+    calibrator = CalibrateRSS(device='cpu')
     # print(calibrator.objective())
     
-    result = calibrator.calibrate()
+    init_param = VSSParamTorch(kappa=0.00842271,
+                               nu=0.12275754,
+                               rho=0.84508075,
+                               X_0=-0.02704256,
+                               theta=0.16772171,
+                               H=0.09164193)
+
+    result = calibrator.calibrate(init_param=init_param)
     with open("VSS_calibration_result.json", 'w', encoding='utf-8') as f:
         json.dump(result, f)
     print("Optimization result has been saved")
 
 
 if __name__ == "__main__":
-    test()
+    main()

@@ -1,129 +1,92 @@
-
-"""
-Precise PyTorch implementation of Volterra Stein-Stein model
-This version aims to exactly replicate the NumPy implementation
-"""
-
+import json
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim import Adam
 import numpy as np
 import numdifftools as nd
 from typing import Union, Tuple, Dict
 
-from hyp2f1_numerical import hyp2f1
+from MonotonicNetwork import MonotonicNetwork 
 
-class VSSParamTorch:
-    """
-    Volterra Stein-Stein model parameters with PyTorch tensors
-    """
-    def __init__(self, 
-                 kappa: float = -8.9e-5,
-                 nu: float = 0.176,
+class NetworkParams:
+    def __init__(self,kappa: float = -8.9e-5,
                  rho: float = -0.704,
                  theta: float = -0.044,
                  X_0: float = 0.113,
-                 H: float = 0.279,
-                 device: str = 'cpu'):
-        
+                 device='cpu'):
         self.device = device
-        
-        # Convert parameters to tensors with requires_grad=True for gradient computation
-        self.kappa = torch.tensor(kappa, dtype=torch.float64, device=device, requires_grad=True)
-        self.nu = torch.tensor(nu, dtype=torch.float64, device=device, requires_grad=True)
-        self.rho = torch.tensor(rho, dtype=torch.float64, device=device, requires_grad=True)
-        self.theta = torch.tensor(theta, dtype=torch.float64, device=device, requires_grad=True)
-        self.X_0 = torch.tensor(X_0, dtype=torch.float64, device=device, requires_grad=True)
-        self.H = torch.tensor(H, dtype=torch.float64, device=device, requires_grad=True)
-        
-        self._validate_parameters()
-    
-    def _validate_parameters(self):
-        """Validate parameter constraints"""
-        if not (0 < self.H < 1):
-            raise ValueError("Hurst index H must be in the interval (0, 1).")
-        if not (-1 < self.rho < 1):
-            raise ValueError("rho must be in the interval (-1, 1).")
-    
-    def to_dict(self) -> Dict[str, torch.Tensor]:
-        """Return parameters as dictionary"""
-        return {
-            'kappa': self.kappa.item(),
-            'nu': self.nu.item(),
-            'rho': self.rho.item(),
-            'theta': self.theta.item(),
-            'X_0': self.X_0.item(),
-            'H': self.H.item()
-        }
-    
-    def set_requires_grad(self, requires_grad: bool = True):
-        """Set requires_grad for all parameters"""
-        for param in [self.kappa, self.nu, self.rho, self.theta, self.X_0, self.H]:
-            param.requires_grad = requires_grad
 
+        self.kappa = nn.Parameter(torch.tensor(kappa), requires_grad=True)
+        self.nu = torch.tensor(1.)
+        self.rho = nn.Parameter(torch.tensor(rho), requires_grad=True)
+        self.theta = nn.Parameter(torch.tensor(theta), requires_grad=True)
+        self.X_0 = nn.Parameter(torch.tensor(X_0), requires_grad=True)
+        self.network = MonotonicNetwork(2,32,1)
+        self.network.load_state_dict(torch.load('pretrain_network.pth', weights_only=False))
+        self.network.eval()
 
-class VSSPricerCOSTorch:
-    """
-    Precise PyTorch implementation of Volterra Stein-Stein model option pricer
-    This version aims to exactly replicate the NumPy implementation
-    """
-    
-    def __init__(self, params: VSSParamTorch, n: int = 252, device: str = 'cpu'):
-        self.params = params
+class VSSPricerCOSTorch(nn.Module):
+    def __init__(self, params: NetworkParams, n: int = 252, device: str = 'cpu'):
+        super(VSSPricerCOSTorch, self).__init__()
         self.device = device
         self.n = n
+
+        self.params = params
         
+
         # Precomputed matrices
-        self.KK = None
-        self.SIG = None
-        self.g = None
-        self.KK_sum = None
-        self.KK_mul = None
-        
-    def _compute_kernel_matrices(self, T: torch.Tensor) -> None:
-        """
-        Compute kernel matrix, covariance matrix, and adjusted input vector
-        using exact PyTorch operations matching NumPy implementation
-        """
-        alpha = self.params.H + 0.5
-        
-        # Time discretization from 0 to T
+        self.KK: torch.Tensor = None
+        self.SIG: torch.Tensor = None
+        self.g: torch.Tensor = None
+        self.KK_sum: torch.Tensor = None
+        self.KK_mul: torch.Tensor = None
+
+    def _compute_kernel_matrices(self, T):
         t = torch.linspace(0, T.item(), self.n + 1, dtype=torch.float64, device=self.device)
-        
-        # Define indices for 2D matrices - exactly matching NumPy implementation
-        # tj_1 = t[:-1].repeat(self.n, 1).T  # Times tj excluding the final point
-        # ti_1 = tj_1.T  # Transpose to create a grid of ti values
-        # tj = t[1:].repeat(self.n, 1).T  # Times tj excluding the initial point
 
-        tj_1 = t[:-1].unsqueeze(0).repeat(self.n, 1) # Times tj excluding the final point
-        ti_1 = tj_1.T  # Transpose to create a grid of ti values
-        tj = t[1:].unsqueeze(0).repeat(self.n, 1)  # Times tj excluding the initial point
+        tj_1 = t[:-1].unsqueeze(0).repeat(self.n, 1)
+        ti_1 = tj_1.T
+        tj = t[1:].unsqueeze(0).repeat(self.n, 1)
         
-        # Initialize kernel matrix KK
-        self.KK = torch.zeros((self.n, self.n), dtype=torch.float64, device=self.device)
-        
-        # K^n_{ij}= \bm 1_{j\leq i-1}\int_{t_{j-1}}^{t_j} K(t_{i-1},s)ds
+        # 创建神经网络输入：ti 和 tj 的组合
         mask = tj <= ti_1
-        self.KK[mask] = ((ti_1 - tj_1)[mask] ** alpha - (ti_1 - tj)[mask] ** alpha) / torch.exp(torch.lgamma(1 + alpha))
+        t_input = torch.zeros_like(ti_1)
+        t_input[mask] = ti_1[mask]
+        t_input = t_input.reshape(-1, 1)
+
+        s1_input = torch.zeros_like(tj)
+        s1_input[mask] = tj[mask]
+        s1_input = s1_input.reshape(-1, 1)
+
+        s0_input = torch.zeros_like(tj_1)
+        s0_input[mask] = tj_1[mask]
+        s0_input = s0_input.reshape(-1, 1)
+
+        inputs1 = torch.cat([t_input, s1_input], dim=1).float() 
+        inputs0 = torch.cat([t_input, s0_input], dim=1).float()
+
+        # KK_tj = self.network(inputs1).reshape(self.n, self.n)
+        # KK_tj_1 = self.network(inputs0).reshape(self.n, self.n)
+        KK_tj, monoloss1= self.params.network.output_and_monotonicity_loss(inputs1)
+        KK_tj_1, monoloss2 = self.params.network.output_and_monotonicity_loss(inputs0)
+        KK_tj = KK_tj.reshape(self.n, self.n)
+        KK_tj_1 = KK_tj_1.reshape(self.n, self.n)
         
+        # self.KK = KK_tj - KK_tj_1
+        KK = KK_tj - KK_tj_1
+        self.KK = KK * torch.tensor(0.1)
         self.KK_sum = self.KK + self.KK.T
-        self.KK_mul = self.KK @ self.KK.T
-        
-        # Compute covariance matrix SIG - using simplified approach for PyTorch
-        # In practice, we need to implement hyp2f1 or use approximation
-        min_t = torch.minimum(ti_1, tj_1)
-        max_t = torch.maximum(ti_1, tj_1)
 
-        max_t[0,0] = 1. # to deal with 0/0 error
+        self.SIG = self.KK @ self.KK.T
+        self.KK_mul = self.SIG
 
-        ratio = min_t / max_t
-        hyp2f1_approx = hyp2f1(1 - alpha,
-                            torch.tensor([1.0], dtype=torch.float64, device=self.device),
-                            1 + alpha,
-                            ratio)
-        self.SIG = self.params.nu ** 2 * (hyp2f1_approx * min_t ** alpha / (max_t ** (1 - alpha)) / (torch.exp(torch.lgamma(1 + alpha)) * torch.exp(torch.lgamma(alpha))))
-        
-        # Compute adjusted vector g based on initial conditions
-        self.g = (self.params.X_0 + self.params.theta * t[:-1] ** alpha / torch.exp(torch.lgamma(1 + alpha)))
+        g_input = t[:-1].unsqueeze(1).repeat(1, 2).float() 
+
+        g_output, monoloss3 = self.params.network.output_and_monotonicity_loss(g_input)
+        self.g = self.params.X_0 + self.params.theta * g_output
+        self.g = torch.squeeze(self.g)
+        self.monoloss = monoloss1 + monoloss2 + monoloss3
     
     def _rss_cf_torch(self, u: torch.Tensor, w: torch.Tensor, r: torch.Tensor, 
                      T: torch.Tensor, moneyness: torch.Tensor) -> torch.Tensor:
@@ -260,7 +223,6 @@ class VSSPricerCOSTorch:
         Parameters:
         L: integration interval multiplier
         tau: time to maturity
-        h: numerical differentiation step size (default adjusted to 1e-4 for stability)
         
         Returns:
         a, b: integration interval endpoints
@@ -424,69 +386,35 @@ class VSSPricerCOSTorch:
         put_prices = put_prices_all[indices]
         
         return {'call': call_prices, 'put': put_prices}
-    
 
 if __name__ == "__main__":
-    import time
-    # Test the precise PyTorch implementation
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # device = 'cpu'
-    print(f"Using device: {device}")
-    
+    import time 
 
-    # Create parameters
-    params = VSSParamTorch(
-        kappa=8.9e-5,
-        nu=0.176,
-        rho=-0.704,
-        theta=-0.044,
-        X_0=0.113,
-        H=0.279,
-        device=device
-    )
+    device = 'cpu'
+    params = NetworkParams()
+    calibrator = VSSPricerCOSTorch(params)
     
-    pricer = VSSPricerCOSTorch(params, n=252, device=device)
-    
-    # Test data
-    S0 = torch.tensor(25617.42, dtype=torch.float64, device=device)
+    S0 = torch.tensor(100, dtype=torch.float64, device=device)
     r = torch.tensor(0.03, dtype=torch.float64, device=device)
+    q = torch.tensor(0., dtype=torch.float64, device=device)
     tau = torch.tensor(1.0, dtype=torch.float64, device=device)
-    K = torch.linspace(16000.0, 35000.0, steps=100, dtype=torch.float64, device=device)
+    K = {'call': torch.linspace(80., 120., steps=10, dtype=torch.float64, device=device),
+         'put': torch.linspace(80., 120., steps=10, dtype=torch.float64, device=device)}
     
     print("\n=== Precise PyTorch Volterra Stein-Stein COS Pricer Test ===")
     print(f"Parameters: kappa={params.kappa.item()}, nu={params.nu.item()}, rho={params.rho.item()}, "
-            f"theta={params.theta.item()}, X_0={params.X_0.item()}, H={params.H.item()}")
+            f"theta={params.theta.item()}, X_0={params.X_0.item()}")
     print(f"Market parameters: S0={S0.item()}, r={r.item()}, tau={tau.item()}")
     
     # Test call price
     print("\n=== Testing call_price method ===")
     start = time.time()
-    call_price = pricer.call_price(S0, K, r, tau)
-    print("Strike\tCall Price")
-    for strike, price in zip(K.tolist()[::10], call_price.tolist()[::10]):
-        print(f"{strike:.2f}\t{price:.6f}")
+    price = calibrator.price(S0, K, r, q, tau)
+    print("Strike\tCall Price\tPut Price\tCall-Put parity")
+    for strike, call, put in zip(K['call'].tolist(), price['call'].tolist(), price['put'].tolist()):
+        parity = call - put + strike * np.exp(-r.item()*tau.item()) - S0
+        print(f"{strike:.2f}\t{call:.6f}\t{put:.6f}\t{parity:.6f}")
     print(f"computed in {time.time() - start:.4f} seconds")
-        
 
     
-    # # Compare with NumPy
-    # from VSS_COS import VSSParam, VSSPricerCOS
-    # param_np = VSSParam(
-    #     kappa=8.9e-5,
-    #     nu=0.176,
-    #     rho=-0.704,
-    #     theta=-0.044,
-    #     X_0=0.113,
-    #     H=0.279
-    # )
-
-    # pricer_np = VSSPricerCOS(param_np, n=252)
-    # start = time.time()
-    # call_price_np = pricer_np.call(S0.cpu().numpy(), K.cpu().numpy(), r.item(), tau.item())
-    # for strike, price in zip(K.tolist(), call_price_np):
-    #     print(f"{strike:.2f}\t{price:.6f}")
-    # print(f"computed in {time.time() - start:.4f} seconds")
-    # print(f"Abs error: {abs(call_price.detach().cpu().numpy() - call_price_np)}")
     
-    
-    print("\n=== Test Completed Successfully ===")
