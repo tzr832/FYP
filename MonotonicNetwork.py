@@ -21,9 +21,9 @@ class MonotonicNetwork(nn.Module):
         # 隐层使用 ReLU 激活函数
 
         x = input
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc21(x))
-        x = torch.relu(self.fc22(x))
+        x = F.softplus(self.fc1(x))
+        x = F.softplus(self.fc21(x))
+        x = F.softplus(self.fc22(x))
         # 输出层使用 Softplus 激活函数，保证输出为正
         x = F.softplus(self.fc3(x))  # Softplus 保证输出恒正
         
@@ -80,14 +80,14 @@ def train(model: MonotonicNetwork, train_data, epochs=100, lr=0.001):
 def gen_test_trainnig_data(n=252, T=1):
     t = np.linspace(0, T, T*n+1)
 
-    tj_1 = np.tile(t[:-1], n).reshape(n, n)  # Times tj excluding the final point
+    tj_1 = np.tile(t[:-1], T*n).reshape(T*n, T*n)  # Times tj excluding the final point
     ti_1 = tj_1.T  # Transpose to create a grid of ti values
-    tj = np.tile(t[1:], n).reshape(n, n)  # Times tj excluding the initial point
+    tj = np.tile(t[1:], T*n).reshape(T*n, T*n)  # Times tj excluding the initial point
 
     alpha = 0.279+0.5 ## H=0.279
 
     mask = tj <= ti_1
-    KK = np.zeros((n,n))
+    KK = np.zeros((T*n,T*n))
     KK[mask] = (ti_1 ** alpha - (ti_1 - tj) ** alpha)[mask] / gamma(1 + alpha)
 
     t_train = ti_1[mask].reshape(-1,1)
@@ -98,7 +98,7 @@ def gen_test_trainnig_data(n=252, T=1):
     outputs = KK[mask].reshape(-1,1)
     outputs = torch.tensor(outputs, dtype=torch.float32)
 
-    return (inputs, outputs)
+    return inputs, outputs
 
 
 if __name__ == "__main__":
