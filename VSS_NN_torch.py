@@ -78,8 +78,10 @@ class VSSPricerCOSTorch(nn.Module):
         self.KK = KK * torch.tensor(0.1)
         self.KK_sum = self.KK + self.KK.T
 
-        self.SIG = self.KK @ self.KK.T
-        self.KK_mul = self.SIG
+        self.KK_mul = self.KK @ self.KK.T
+        dt_inv = torch.tensor(self.n / T)
+        self.SIG = self.KK_mul * dt_inv
+        
 
         g_input = t[:-1].unsqueeze(1).repeat(1, 2).float() 
 
@@ -392,7 +394,7 @@ if __name__ == "__main__":
 
     device = 'cpu'
     params = NetworkParams()
-    calibrator = VSSPricerCOSTorch(params)
+    calibrator = VSSPricerCOSTorch(params, n=252)
     
     S0 = torch.tensor(25000., dtype=torch.float64, device=device)
     r = torch.tensor(0.03, dtype=torch.float64, device=device)
