@@ -79,7 +79,7 @@ class VSSPricerCOSTorch(nn.Module):
         self.KK_sum = self.KK + self.KK.T
 
         self.KK_mul = self.KK @ self.KK.T
-        dt_inv = torch.tensor(self.n / T)
+        dt_inv = self.n / T
         self.SIG = self.KK_mul * dt_inv
         
 
@@ -399,7 +399,7 @@ if __name__ == "__main__":
     S0 = torch.tensor(25000., dtype=torch.float64, device=device)
     r = torch.tensor(0.03, dtype=torch.float64, device=device)
     q = torch.tensor(0., dtype=torch.float64, device=device)
-    tau = torch.tensor(1.0, dtype=torch.float64, device=device)
+    tau = torch.tensor(5.0, dtype=torch.float64, device=device)
     K = {'call': torch.linspace(16000., 35000., steps=10, dtype=torch.float64, device=device),
          'put': torch.linspace(16000., 35000., steps=10, dtype=torch.float64, device=device)}
     

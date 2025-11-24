@@ -10,8 +10,9 @@ from torch.optim import Adam
 import numpy as np
 import numdifftools as nd
 from typing import Union, Tuple, Dict
+from math import atanh
 
-class VSSParamTorch:
+class VSSParamLaplaceTorch:
     """
     Volterra Stein-Stein model parameters with PyTorch tensors
     """
@@ -74,7 +75,7 @@ class VSSPricerCOSTorch:
     This version aims to exactly replicate the NumPy implementation
     """
     
-    def __init__(self, params: VSSParamTorch, n: int = 252, device: str = 'cpu'):
+    def __init__(self, params: VSSParamLaplaceTorch, n: int = 252, device: str = 'cpu'):
         self.params = params
         self.device = device
         self.n = n
@@ -86,7 +87,7 @@ class VSSPricerCOSTorch:
         self.KK_sum = None
         self.KK_mul = None
     
-    def set_params(self, params: VSSParamTorch) -> None:
+    def set_params(self, params: VSSParamLaplaceTorch) -> None:
         """Set model parameters"""
         self.params = params
 
@@ -536,13 +537,41 @@ class VSSPricerCOSTorch:
         rmse = torch.sqrt(torch.mean(error))
         return rmse
 
-    def calibrate(self, dict_path: str='Data/250901.json', tol=1e-3, lr: float=1e-4, epochs: int=1000) -> None:
+    def calibrate(self, dict_path: str='Data/250901.json', tol=1e-3, lr: float=1e-2, epochs: int=1000) -> None:
         """
         Train model parameters using Adam optimizer to minimize objective function
         """
-        optimizer = Adam(self.params.to_dict().values(), lr=lr)
-        last_loss = torch.tensor(float('inf'), dtype=torch.float64, device=self.device)
+        init_kappa = torch.tensor(-8.9e-5, dtype=torch.float64, requires_grad=True)
+        init_rho = torch.tensor(atanh(-0.704), dtype=torch.float64, requires_grad=True)
+        init_theta = torch.tensor(-0.044, dtype=torch.float64, requires_grad=True)
+        init_X0 = torch.tensor(0.113, dtype=torch.float64, requires_grad=True)
+        init_c = torch.tensor([0.005815448596142969, 0.006291016742457756, 0.012358607277440904,
+                               0.0052580164361077045, 0.052617189685476184, 0.04767847537874797, 
+                               0.09552357002491417, 0.09287525814574296, 0.008354336875286783, 0.013264067215369858], 
+                              dtype=torch.float64, requires_grad=True)
+        init_gamma = torch.tensor([1.5705349751070807, 3.753670320505006, 8.425197308314868, 
+                                   8.705010417836975, 3.7753295527055943, 6.124365889937913, 
+                                   0.88109784914571, 7.011818919498007, 6.234030833542006, 4.372789977906521], 
+                                  dtype=torch.float64, requires_grad=True)
+        param = VSSParamLaplaceTorch()
+        with torch.no_grad():
+            init_c = torch.log(init_c)
+            init_gamma = torch.log(init_gamma)
+
+        optimizer = Adam([init_kappa, init_rho, init_theta, init_X0], lr=lr)
+        last_loss = torch.tensor(torch.inf)
+
         for epoch in range(epochs):
+            rho = torch.tanh(init_rho)
+            param.kappa=init_kappa
+            param.rho=rho
+            param.X_0=init_X0
+            param.theta=init_theta
+            param.c = torch.exp(init_c)
+            param.gamma = torch.exp(init_gamma)
+            self.params = param
+
+
             optimizer.zero_grad()
             loss = self.objective(dict_path)
             loss.backward()
@@ -557,7 +586,7 @@ class VSSPricerCOSTorch:
         print(f"Convergence didn't reached after {epochs} epochs. ({tol})")
         return {"suc": False, "loss": loss.item(), "param": self.params.to_dict()}
     
-def test():
+def demo():
     import time
     # Test the precise PyTorch implementation
     # device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -570,7 +599,7 @@ def test():
     torch.backends.cudnn.deterministic = True
 
     # Create parameters
-    params = VSSParamTorch(
+    params = VSSParamLaplaceTorch(
         kappa=8.9e-5,
         # nu=0.176,
         rho=-0.704,
@@ -633,14 +662,15 @@ def main():
     
     torch.manual_seed(42)
 
-    calibrator = VSSPricerCOSTorch(VSSParamTorch(), device=device)
+    calibrator = VSSPricerCOSTorch(VSSParamLaplaceTorch(), device=device)
 
     result = calibrator.calibrate()
-    with open("VSS_calibration_result.json", 'w', encoding='utf-8') as f:
+    with open("Laplace_calibration_result.json", 'w', encoding='utf-8') as f:
         json.dump(result, f)
 
     print("Optimization result has been saved")
 
 
 if __name__ == "__main__":
-    main()
+    main() 
+    # demo()
