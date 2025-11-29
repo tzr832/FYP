@@ -429,8 +429,8 @@ class VSSPricerCOSTorch:
 if __name__ == "__main__":
     import time
     # Test the precise PyTorch implementation
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # device = 'cpu'
+    # device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cpu'
     print(f"Using device: {device}")
     
 

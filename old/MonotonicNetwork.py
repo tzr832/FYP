@@ -34,18 +34,18 @@ class MonotonicNetwork(nn.Module):
         
         return result
 
-    # 定义一个损失函数，强制网络对第二个输入特征单调递增
-    def output_and_monotonicity_loss(self, inputs):
-        # 假设我们希望确保网络对第一个输入（x[:, 0]）单调递增
-        inputs.requires_grad_(True)
+    # # 定义一个损失函数，强制网络对第二个输入特征单调递增
+    # def output_and_monotonicity_loss(self, inputs):
+    #     # 假设我们希望确保网络对第一个输入（x[:, 0]）单调递增
+    #     inputs.requires_grad_(True)
 
-        outputs = self.forward(inputs)
+    #     outputs = self.forward(inputs)
 
-        # 计算输出对第一个输入的梯度
-        grad_outputs = torch.autograd.grad(outputs.sum(), inputs, create_graph=True, allow_unused=True)[0]
+    #     # 计算输出对第一个输入的梯度
+    #     grad_outputs = torch.autograd.grad(outputs.sum(), inputs, create_graph=True, allow_unused=True)[0]
         
-        # 通过正则化强制梯度为正（即确保对该输入单调递增）
-        return outputs, torch.mean(torch.relu(-grad_outputs[:,1]))  # 梯度应该为正，若不正则化则违反单调性 
+    #     # 通过正则化强制梯度为正（即确保对该输入单调递增）
+    #     return outputs, torch.mean(torch.relu(-grad_outputs[:,1]))  # 梯度应该为正，若不正则化则违反单调性 
 
 def train(model: MonotonicNetwork, train_data, epochs=100, lr=0.001):
     optimizer = optim.SGD(model.parameters(), lr=lr)

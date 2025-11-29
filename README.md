@@ -1,6 +1,6 @@
 # Volterra Stein Stein Model Implementation
 
-It implemented the pricing of European options under the Rough Stein-Stein model ([Abi Jaber, 2022](https://doi.org/10.1007/s00780-022-00489-4) Sec 4.2) using the COS Fourier method [(Fang, 2009)](https://doi.org/10.1137/080718061). Also COS option pricing engine for Black-Scholes and Heston model.
+It implemented the pricing of European options under the Rough Stein-Stein model ([Abi Jaber, 2022](https://doi.org/10.1007/s00780-022-00489-4) Sec 4.2) using the COS Fourier method [(Fang, 2009)](https://doi.org/10.1137/080718061). 
 
 ## References
 [1] Abi Jaber, E. (2022). The characteristic function of Gaussian stochastic volatility
