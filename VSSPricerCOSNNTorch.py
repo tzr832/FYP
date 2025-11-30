@@ -226,28 +226,34 @@ class VSSPricerCOSNNTorch(VSSPricerCOSBase):
         
         prev_loss = torch.tensor(torch.inf)
         
-        for epoch in range(epochs):                       
-            # 计算目标函数（包含单调性损失）
-            loss = self.objective(option_dict, monotonic_weight)
-            
-            # 反向传播
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            
+        try:
+            for epoch in range(epochs):                       
+                # 计算目标函数（包含单调性损失）
 
-            if (epoch + 1) % 1 == 0:
-                print(f"Epoch {epoch+1}: Loss={loss.item():.6f}", end=" | ")
-                print(f"Params: kappa={self.params.kappa.item():.6f}, "
-                      f"rho={self.params.rho.item():.6f}, theta={self.params.theta.item():.6f}, "
-                      f"X_0={self.params.X_0.item():.6f}")
-            
-            if abs(loss.item() - prev_loss.item()) < tol:
-                print(f"Optimization finished! The optimum parameters are found within given tolerance ({tol})")
-                # 设置网络为评估模式
-                self.params.eval()
-                return {"suc": True, "loss": loss.item(), "param": self.params.to_dict()}
-            prev_loss = loss.detach()
+                loss = self.objective(option_dict, monotonic_weight)
+                
+                # 反向传播
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                
+
+                if (epoch + 1) % 1 == 0:
+                    print(f"Epoch {epoch+1}: Loss={loss.item():.6f}", end=" | ")
+                    print(f"Params: kappa={self.params.kappa.item():.6f}, "
+                        f"rho={self.params.rho.item():.6f}, theta={self.params.theta.item():.6f}, "
+                        f"X_0={self.params.X_0.item():.6f}")
+                
+                if abs(loss.item() - prev_loss.item()) < tol:
+                    print(f"Optimization finished! The optimum parameters are found within given tolerance ({tol})")
+                    # 设置网络为评估模式
+                    self.params.eval()
+                    return {"suc": True, "loss": loss.item(), "param": self.params.to_dict()}
+                prev_loss = loss.detach()
+
+        except KeyboardInterrupt:
+            print("Optimization interrupted by user.")
+            return {"suc": False, "loss": loss.item(), "param": self.params.to_dict()}
         
         print(f"Optimization finished! The optimum parameters are not found within given tolerance ({tol})")
         # 设置网络为评估模式

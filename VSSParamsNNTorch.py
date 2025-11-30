@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict
+from math import atanh
 
 
 class MonotonicNetwork(nn.Module):
@@ -67,11 +68,16 @@ class VSSParamNNTorch(MonotonicNetwork):
 
         self.kappa = nn.Parameter(torch.tensor(kappa), requires_grad=True)
         self.nu = torch.tensor(1., dtype=torch.float64, requires_grad=False) 
-        self.rho = nn.Parameter(torch.tensor(rho), requires_grad=True)
+        self._raw_rho = nn.Parameter(torch.tensor(atanh(rho)), requires_grad=True)
         self.theta = nn.Parameter(torch.tensor(theta), requires_grad=True)
         self.X_0 = nn.Parameter(torch.tensor(X_0), requires_grad=True)
         super().load_state_dict(torch.load('results/pretrain_network.pth', weights_only=False))
         self.eval()
+    
+    @property
+    def rho(self):
+        """返回经过 tanh 约束的 rho 值，确保在 (-1, 1) 范围内"""
+        return torch.tanh(self._raw_rho)
     
     def to_dict(self) -> Dict[str, torch.Tensor]:
         """Return parameters as dictionary"""

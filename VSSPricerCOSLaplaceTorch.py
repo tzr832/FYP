@@ -4,7 +4,7 @@ Volterra Stein-Stein COS Pricer with exponential kernel implementation
 
 import torch
 import json
-from torch.optim import Adam
+import torch.optim as opt
 import numpy as np
 import numdifftools as nd
 from typing import Union, Tuple, Dict
@@ -159,7 +159,7 @@ class VSSPricerCOSLaplaceTorch(VSSPricerCOSBase):
     
     def calibrate(self, dict_: Union[str, Dict], tol=1e-3, lr: float=1e-2, epochs: int=1000) -> None:
         """
-        使用 Adam 优化器训练模型参数以最小化目标函数
+        最小化目标函数以拟合参数
         """
         init_kappa = torch.tensor(-8.9e-5, dtype=torch.float64, requires_grad=True)
         init_rho = torch.tensor(atanh(-0.704), dtype=torch.float64, requires_grad=True)
@@ -178,31 +178,40 @@ class VSSPricerCOSLaplaceTorch(VSSPricerCOSBase):
             init_c = torch.log(init_c)
             init_gamma = torch.log(init_gamma)
 
-        optimizer = Adam([init_kappa, init_rho, init_theta, init_X0, init_c, init_gamma], lr=lr)
+        optimizer = opt.LBFGS([init_kappa, init_rho, init_theta, init_X0, init_c, init_gamma])
+
         last_loss = torch.tensor(torch.inf)
+        # loss = torch.tensor(torch.inf)
 
-        for epoch in range(epochs):
-            rho = torch.tanh(init_rho)
-            param.kappa=init_kappa
-            param.rho=rho
-            param.X_0=init_X0
-            param.theta=init_theta
-            param.c = torch.exp(init_c)
-            param.gamma = torch.exp(init_gamma)
-            self.params = param
+        def closure():          
+            return loss
+
+        try:
+            for epoch in range(epochs):
+                rho = torch.tanh(init_rho)
+                param.kappa=init_kappa
+                param.rho=rho
+                param.X_0=init_X0
+                param.theta=init_theta
+                param.c = torch.exp(init_c)
+                param.gamma = torch.exp(init_gamma)
+                self.params = param
 
 
-            optimizer.zero_grad()
-            loss = self.objective(dict_)
-            loss.backward()
-            optimizer.step()
+                optimizer.zero_grad()
+                loss = self.objective(dict_)
+                loss.backward()
+                optimizer.step(closure)
+                
+                print(f"Epoch {epoch}, Objective: {loss.item():.6f}")
             
-            print(f"Epoch {epoch}, Objective: {loss.item():.6f}")
-        
-            if torch.abs(last_loss - loss) < 1e-3:
-                print(f"Convergence reached. ({tol})")
-                return {"suc": True, "loss": loss.item(), "param": self.params.to_dict()}
-            last_loss = loss
+                if torch.abs(last_loss - loss) < 1e-3:
+                    print(f"Convergence reached. ({tol})")
+                    return {"suc": True, "loss": loss.item(), "param": self.params.to_dict()}
+                last_loss = loss
+        except KeyboardInterrupt:
+            print("Optimization interrupted by user.")
+            return {"suc": False, "loss": loss.item(), "param": self.params.to_dict()}
 
         print(f"Convergence didn't reached after {epochs} epochs. ({tol})")
         return {"suc": False, "loss": loss.item(), "param": self.params.to_dict()}

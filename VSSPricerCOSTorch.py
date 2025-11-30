@@ -148,35 +148,39 @@ class VSSPricerCOSTorch(VSSPricerCOSBase):
         optimizer = Adam(params=[init_kappa, init_nu, init_rho, init_theta, init_X0, init_H], lr=lr)
         prev_loss = torch.tensor(torch.inf)
         
-        for epoch in range(epochs):
-            rho = torch.tanh(init_rho)
-            H = torch.sigmoid(init_H)
+        try:
+            for epoch in range(epochs):
+                rho = torch.tanh(init_rho)
+                H = torch.sigmoid(init_H)
 
-            param = VSSParamTorch()
-            param.kappa = init_kappa
-            param.nu = init_nu
-            param.rho = rho
-            param.theta = init_theta
-            param.X_0 = init_X0
-            param.H = H
-            self.params = param
+                param = VSSParamTorch()
+                param.kappa = init_kappa
+                param.nu = init_nu
+                param.rho = rho
+                param.theta = init_theta
+                param.X_0 = init_X0
+                param.H = H
+                self.params = param
 
-            optimizer.zero_grad()
-            loss = self.objective(option_dict)
-            loss.backward()
-            optimizer.step()
-            
+                optimizer.zero_grad()
+                loss = self.objective(option_dict)
+                loss.backward()
+                optimizer.step()
+                
 
-            if (epoch + 1) % 1 == 0:
-                print(f"Epoch {epoch+1}: Loss={loss.item():.6f}", end=" | ")
-                print(f"Params: kappa={self.params.kappa.item():.8f}, nu={self.params.nu.item():.6f}, "
-                      f"rho={rho.item():.6f}, theta={self.params.theta.item():.6f}, "
-                      f"X_0={self.params.X_0.item():.6f}, H={H.item():.6f}")
-            
-            if abs(loss - prev_loss) < tol:
-                print(f"Optimization finished! The optimum parameters are found within given tolerance ({tol})")
-                return {"suc": True, "loss": loss.item(), "param": param.to_dict()}
-            prev_loss = loss
+                if (epoch + 1) % 1 == 0:
+                    print(f"Epoch {epoch+1}: Loss={loss.item():.6f}", end=" | ")
+                    print(f"Params: kappa={self.params.kappa.item():.8f}, nu={self.params.nu.item():.6f}, "
+                        f"rho={rho.item():.6f}, theta={self.params.theta.item():.6f}, "
+                        f"X_0={self.params.X_0.item():.6f}, H={H.item():.6f}")
+                
+                if abs(loss - prev_loss) < tol:
+                    print(f"Optimization finished! The optimum parameters are found within given tolerance ({tol})")
+                    return {"suc": True, "loss": loss.item(), "param": param.to_dict()}
+                prev_loss = loss
+        except KeyboardInterrupt:
+            print("Optimization interrupted by user.")
+            return {"suc": False, "loss": loss.item(), "param": param.to_dict()}
 
         print(f"Optimization finished! The optimum parameters are not found within given tolerance ({tol})")
         return {"suc": False, "loss": loss.item(), "param": param.to_dict()}
