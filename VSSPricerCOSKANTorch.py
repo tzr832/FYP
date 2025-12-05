@@ -1,5 +1,5 @@
 """
-Volterra Stein-Stein COS Pricer with neural network implementation
+Volterra Stein-Stein COS Pricer with KAN implementation
 """
 
 import torch
@@ -10,20 +10,20 @@ from math import atanh
 import json
 
 from VSSPricerCOSBase import VSSPricerCOSBase
-from VSSParamsNNTorch import VSSParamNNTorch
+from VSSParamsKANTorch import VSSParamKANTorch
 
 
-class VSSPricerCOSNNTorch(VSSPricerCOSBase):
+class VSSPricerCOSKANTorch(VSSPricerCOSBase):
     """
-    Volterra Stein-Stein COS Pricer with neural network implementation
+    Volterra Stein-Stein COS Pricer with KAN implementation
     """
     
-    def __init__(self, params: VSSParamNNTorch, n: int = 252, device: str = 'cpu'):
+    def __init__(self, params: VSSParamKANTorch, n: int = 252, device: str = 'cpu'):
         """
-        初始化神经网络实现
+        初始化KAN实现
         
         Args:
-            params: VSSParamNNTorch 参数对象
+            params: VSSParamKANTorch 参数对象
             n: 时间离散化点数
             device: 计算设备
         """
@@ -31,7 +31,7 @@ class VSSPricerCOSNNTorch(VSSPricerCOSBase):
     
     def _compute_kernel_matrices(self, T):
         """
-        使用神经网络计算核矩阵、协方差矩阵和调整输入向量
+        使用KAN计算核矩阵、协方差矩阵和调整输入向量
         """
         t = torch.linspace(0, T.item(), self.n + 1, dtype=torch.float64, device=self.device)
 
@@ -39,7 +39,7 @@ class VSSPricerCOSNNTorch(VSSPricerCOSBase):
         ti_1 = tj_1.T
         tj = t[1:].unsqueeze(0).repeat(self.n, 1)
         
-        # 创建神经网络输入：ti 和 tj 的组合
+        # 创建KAN输入：ti 和 tj 的组合
         mask = tj <= ti_1
         t_input = torch.zeros_like(ti_1)
         t_input[mask] = ti_1[mask]
@@ -60,102 +60,25 @@ class VSSPricerCOSNNTorch(VSSPricerCOSBase):
         KK_tj: torch.Tensor = self.params(inputs1).reshape(self.n, self.n)
         KK_tj_1: torch.Tensor = self.params(inputs0).reshape(self.n, self.n)
         
-        KK = KK_tj - KK_tj_1
-        self.KK = KK * torch.tensor(0.1)
+        self.KK = KK_tj - KK_tj_1
         self.KK_sum = self.KK + self.KK.T
 
         self.KK_mul = self.KK @ self.KK.T
         dt_inv = self.n / T
-        self.SIG = self.KK_mul * dt_inv
+        self.SIG = self.params.nu**2 * self.KK_mul * dt_inv
         
 
         g_input = t[:-1].unsqueeze(1).repeat(1, 2).float()
         g_output: torch.Tensor = self.params(g_input)
         self.g = self.params.X_0 + self.params.theta * g_output
         self.g = torch.squeeze(self.g)
-
-    def _compute_monotonicity_loss(self, T: torch.Tensor = None) -> torch.Tensor:
-        """
-        计算神经网络对第二个输入参数的单调性损失
-        
-        Args:
-            T: 到期时间，如果为 None 则使用默认值 1.0
-            
-        Returns:
-            torch.Tensor: 单调性损失值
-        """
-        if T is None:
-            # 如果没有提供 T，使用默认值
-            T = torch.tensor(1.0, dtype=torch.float64, device=self.device)
-        
-        # 生成测试点来检查单调性
-        t = torch.linspace(0, T.item(), self.n + 1, dtype=torch.float64, device=self.device)
-        
-        # 创建测试输入：固定第一个参数，变化第二个参数
-        # 使用多个固定时间点作为第一个参数
-        num_test_points = min(10, self.n)  # 使用较少的测试点以提高效率
-        test_times = t[torch.linspace(0, self.n, num_test_points, dtype=torch.long)]
-        
-        # 为每个固定时间点创建变化的第二个参数
-        monotonic_loss = torch.tensor(0.0, dtype=torch.float64, device=self.device)
-        
-        for t_fixed in test_times:
-            # 创建变化的第二个参数，确保 t > s
-            # 第二个参数 s 应该小于第一个参数 t
-            s_max = t_fixed.item() * 0.99  # 确保 s < t，留一点余量
-            if s_max > 0:
-                s_values = torch.linspace(0, s_max, 20, dtype=torch.float64, device=self.device)
-            else:
-                # 如果 t_fixed 太小，跳过这个测试点
-                continue
-            
-            # 构建输入：固定第一个参数，变化第二个参数
-            inputs = torch.stack([
-                torch.full_like(s_values, t_fixed.item()),
-                s_values
-            ], dim=1).float()
-            
-            # 验证输入满足 t > s 条件
-            assert torch.all(inputs[:, 0] > inputs[:, 1]), "输入必须满足 t > s 条件"
-            
-            # 启用梯度计算
-            inputs.requires_grad_(True)
-            
-            # 计算网络输出
-            outputs = self.params(inputs).squeeze()
-            
-            # 计算输出对第二个输入的梯度
-            # 使用自动微分计算梯度
-            grad_outputs = torch.autograd.grad(
-                outputs=outputs,
-                inputs=inputs,
-                grad_outputs=torch.ones_like(outputs),
-                create_graph=True,
-                retain_graph=True,
-                only_inputs=True
-            )[0]
-            
-            # 提取对第二个输入的梯度
-            grad_wrt_s = grad_outputs[:, 1]
-            
-            # 单调性损失：惩罚负梯度（即非单调递减）
-            # 使用 ReLU 惩罚负梯度值
-            negative_grad_penalty = torch.relu(-grad_wrt_s)
-            monotonic_loss += negative_grad_penalty.mean()
-        
-        # 返回平均单调性损失
-        if monotonic_loss > 0:
-            return monotonic_loss / len(test_times)
-        else:
-            return torch.tensor(0.0, dtype=torch.float64, device=self.device)
     
-    def objective(self, option_dict: Dict, monotonic_weight: float = 0.1) -> torch.Tensor:
+    def objective(self, option_dict: Dict) -> torch.Tensor:
         """
         校准目标函数：模型价格与市场价格之间的 RMSE + 单调性正则化损失
         
         Args:
             option_dict: 期权数据字典，包含市场价格信息
-            monotonic_weight: 单调性正则化权重
             
         Returns:
             torch.Tensor: RMSE 损失值 + 单调性正则化损失
@@ -186,18 +109,11 @@ class VSSPricerCOSNNTorch(VSSPricerCOSBase):
             error = torch.cat([error, error_call, error_put])
         
         rmse = torch.sqrt(torch.mean(error))
-    
-        # 计算单调性损失（使用最后一个期权的到期时间）
-        monotonic_loss = self._compute_monotonicity_loss(tau)
         
-        # 总损失 = RMSE + 单调性正则化损失
-        total_loss = rmse + monotonic_weight * monotonic_loss
-        
-        return total_loss
+        return rmse
     
-    def calibrate(self, option_dict: Dict, init_param: VSSParamNNTorch = None,
-                 lr: float = 0.01, tol: float = 1e-3, epochs: int = 1000,
-                 monotonic_weight: float = 0.1) -> Dict:
+    def calibrate(self, option_dict: Dict, init_param: VSSParamKANTorch = None,
+                 lr: float = 0.01, tol: float = 1e-3, epochs: int = 1000) -> Dict:
         """
         使用 Adam 优化器训练模型参数以最小化目标函数
         注意：需要处理 _compute_kernel_matrices 中的单调性损失梯度流
@@ -208,22 +124,21 @@ class VSSPricerCOSNNTorch(VSSPricerCOSBase):
             lr: 学习率
             tol: 收敛容忍度
             epochs: 最大迭代次数
-            monotonic_weight: 单调性正则化权重
             
         Returns:
             Dict: 校准结果，包含成功标志、损失值和最终参数
         """
-        if init_param is None:
-            # 使用默认参数
-            self.params = VSSParamNNTorch(device=self.device)
-        else:
+        
+        if init_param != None:
             self.params = init_param
         
         self.params.train()
 
         # 创建优化器，优化所有参数（包括网络参数和神经网络权重）
-        # optimizer = opt.Adam(self.params.parameters(), lr=lr)
-        optimizer = opt.LBFGS(self.params.parameters())
+        # optimizer = opt.LBFGS(self.params.parameters(), lr=lr)
+        # optimizer = opt.SGD(self.params.parameters(), lr=lr)
+        optimizer = opt.Adam(self.params.parameters(), lr=lr)
+        
         
         prev_loss = torch.tensor(torch.inf)
 
@@ -234,7 +149,7 @@ class VSSPricerCOSNNTorch(VSSPricerCOSBase):
             for epoch in range(epochs):                       
                 # 计算目标函数（包含单调性损失）
 
-                loss = self.objective(option_dict, monotonic_weight)
+                loss = self.objective(option_dict)
                 
                 # 反向传播
                 loss.backward()
@@ -265,20 +180,39 @@ class VSSPricerCOSNNTorch(VSSPricerCOSBase):
         self.params.eval()
         return {"suc": False, "loss": loss.item(), "param": self.params.to_dict()}
     
-def main():
+def main(epochs: int):
     device = 'cpu'
     print(f"Using device: {device}")
     
     torch.manual_seed(42)
-
-    calibrator = VSSPricerCOSNNTorch(VSSParamNNTorch(), device=device)
+    params = VSSParamKANTorch(hidden_dim=10, num_grids=64, t_range=(0,6), device=device)
+    calibrator = VSSPricerCOSKANTorch(params, device=device)
 
     with open('Data/250901.json', 'r') as f:
         option_data = json.load(f)
-    result = calibrator.calibrate(option_data)
-    torch.save(calibrator.params.state_dict(), 'results/NN_calibrated_network.pth', _use_new_zipfile_serialization=False)
+    result = calibrator.calibrate(option_data, lr=0.01, epochs=epochs)
+    torch.save(calibrator.params.state_dict(), 'results/KAN_calibrated_network.pth', _use_new_zipfile_serialization=False)
 
     print("Optimization result has been saved")
 
+def test():
+    import time
+    device = 'cpu'
+    # device = 'cuda'
+    params = VSSParamKANTorch(hidden_dim=10, num_grids=64, t_range=(0,6), device=device)
+    pricer = VSSPricerCOSKANTorch(params, n=252, device=device)
+    with open('Data/250901.json', 'r') as f:
+        option_data = json.load(f)
+    start = time.time()
+    rmse = pricer.objective(option_data)
+    print(f"RMSE computied in {time.time() - start:.6f}s")
+    print(f"RMSE: {rmse}")
+
+    start = time.time()
+    rmse.backward()
+    
+    print(f'backward done in {time.time() - start:.6f}s')
+
 if __name__ == "__main__":
-    main()
+    main(epochs=100)
+    # test()

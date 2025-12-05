@@ -219,6 +219,11 @@ class VSSPricerCOSBase(ABC):
         计算欧式看涨期权价格
         """
         
+        if self.g is None or self.KK is None or self.SIG is None:
+            self._compute_kernel_matrices(tau)
+        elif self.g.shape[0] != self.n:
+            self._compute_kernel_matrices(tau)
+
         # 从 NumPy 获取精确边界
         a, b = self._cal_integral_bounds(L, r, tau)
         
@@ -257,6 +262,11 @@ class VSSPricerCOSBase(ABC):
         """
         计算欧式看跌期权价格
         """
+        if self.g is None or self.KK is None or self.SIG is None:
+            self._compute_kernel_matrices(tau)
+        elif self.g.shape[0] != self.n:
+            self._compute_kernel_matrices(tau)
+
         S = S.to(torch.float64).to(self.device)
         K = K.to(torch.float64).to(self.device)
         r = r.to(torch.float64).to(self.device)

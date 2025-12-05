@@ -10,30 +10,40 @@ from math import atanh
 
 
 class MonotonicNetwork(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
+    def __init__(self, input_dim, hidden_dim, output_dim, device='cuda'):
         super(MonotonicNetwork, self).__init__()
         
         # 定义网络结构
-        self.fc1 = nn.Linear(input_dim, hidden_dim)  # 输入层到隐层
-        self.fc21 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc22 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, output_dim)  # 隐层到输出层
-        self.B = nn.Parameter(torch.tensor(1. + 1e-6))
-
+        self.q_fc1 = nn.Linear(input_dim, hidden_dim, device=device)  # 输入层到隐层
+        self.q_fc2 = nn.Linear(hidden_dim, hidden_dim, device=device)
+        self.q_fc3 = nn.Linear(hidden_dim, output_dim, device=device)  # 隐层到输出层
+        # self.p_fc1 = nn.Linear(1, hidden_dim, device=device)  # 输入层到隐层
+        # self.p_fc2 = nn.Linear(hidden_dim, hidden_dim, device=device)
+        # self.p_fc3 = nn.Linear(hidden_dim, output_dim, device=device)  # 隐层到输出层
+        self.B = nn.Parameter(torch.tensor(1. + 1e-6, device=device))
+        self.K = nn.Parameter(torch.tensor(0.5, device=device))
+        # self.alpha = nn.Parameter(torch.tensor(1., device=device))
     def forward(self, input):
         # 隐层使用 ReLU 激活函数
 
-        x = input
-        x = F.softplus(self.fc1(x))
-        x = F.softplus(self.fc21(x))
-        x = F.softplus(self.fc22(x))
+        q = input
+        q = F.softplus(self.q_fc1(q))
+        q = F.softplus(self.q_fc2(q))
+        q = F.softplus(self.q_fc3(q))
         # 输出层使用 Softplus 激活函数，保证输出为正
-        x = F.softplus(self.fc3(x))  # Softplus 保证输出恒正
+
+        s_input = input[:, 1:2]  # 保持维度，shape: (batch_size, 1)
+        # p = s_input.clone()
+        # p = F.softplus(self.p_fc1(p))
+        # p = F.softplus(self.p_fc2(p))
+        # p = F.softplus(self.p_fc3(p))  # Softplus 保证输出恒正
         
         # 确保输入的第二列在计算图中被正确使用
         # 通过显式地创建依赖关系
-        s_input = input[:, 1:2]  # 保持维度，shape: (batch_size, 1)
-        result = self.B * torch.tanh(s_input * x)
+        
+        # result = self.B * torch.tanh(s_input * p * q * self.K)
+        result = self.B * torch.tanh(s_input * q * self.K)
+        # result = q * p
         
         return result
 
@@ -63,15 +73,15 @@ class VSSParamNNTorch(MonotonicNetwork):
                  hidden_size: int = 32,
                  output_size: int = 1,
                  device='cpu'):
-        super().__init__(input_size, hidden_size, output_size)
+        super().__init__(input_size, hidden_size, output_size, device=device)
         self.device = device
 
-        self.kappa = nn.Parameter(torch.tensor(kappa), requires_grad=True)
-        self.nu = torch.tensor(1., dtype=torch.float64, requires_grad=False) 
-        self._raw_rho = nn.Parameter(torch.tensor(atanh(rho)), requires_grad=True)
-        self.theta = nn.Parameter(torch.tensor(theta), requires_grad=True)
-        self.X_0 = nn.Parameter(torch.tensor(X_0), requires_grad=True)
-        super().load_state_dict(torch.load('results/pretrain_network.pth', weights_only=False))
+        self.kappa = nn.Parameter(torch.tensor(kappa, device=device), requires_grad=True)
+        self.nu = torch.tensor(1., dtype=torch.float64, device=device, requires_grad=False) 
+        self._raw_rho = nn.Parameter(torch.tensor(atanh(rho), device=device), requires_grad=True)
+        self.theta = nn.Parameter(torch.tensor(theta, device=device), requires_grad=True)
+        self.X_0 = nn.Parameter(torch.tensor(X_0, device=device), requires_grad=True)
+        # super().load_state_dict(torch.load('results/pretrain_network.pth', weights_only=False))
         self.eval()
     
     @property
@@ -91,7 +101,7 @@ class VSSParamNNTorch(MonotonicNetwork):
 
 if __name__ == "__main__":
     # 测试 NetworkParams 类
-    net_params = VSSParamNNTorch()
+    net_params = VSSParamNNTorch(device='cuda')
     print("Network Parameters:")
     for name, value in net_params.to_dict().items():
         print(f"{name}: {value}")
